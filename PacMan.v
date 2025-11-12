@@ -1,6 +1,6 @@
 module PacMan(
   input  wire CLOCK_50,
-  input  wire KEY0,                   // active-low reset on many Terasic boards
+  input  wire KEY0,
   output wire [9:0] LEDR,
   output wire [6:0] HEX0, HEX1
 );
@@ -24,13 +24,9 @@ module PacMan(
     .r(r), .g(g), .b(b)
   );
 
-  reg px_div2;
-  always @(posedge pclk or negedge rst_n)
-    if (!rst_n) px_div2 <= 1'b0; else px_div2 <= ~px_div2;
-
   assign LEDR[0] = hs;
   assign LEDR[1] = vs;
-  assign LEDR[2] = px_div2;
+  assign LEDR[2] = 1'b0;
   assign LEDR[3] = h[5];
   assign LEDR[4] = h[8];
   assign LEDR[5] = v[5];
@@ -45,13 +41,14 @@ module PacMan(
       frame_cnt <= 16'h0000;
     end else begin
       vs_d <= vs;
-      if (vs_d && !vs) frame_cnt <= frame_cnt + 1'b1; // count falling edge of VS
+      if (vs_d && !vs) frame_cnt <= frame_cnt + 1'b1; // increment per frame
     end
   end
 
-  sevenseg HEXL(.x(frame_cnt[3:0]),   .seg(HEX0));
-  sevenseg HEXH(.x(frame_cnt[7:4]),   .seg(HEX1));
+  sevenseg HEXL(.x(frame_cnt[3:0]), .seg(HEX0));
+  sevenseg HEXH(.x(frame_cnt[7:4]), .seg(HEX1));
 endmodule
+
 
 module vga_core_640x480(
   input  wire        pclk,
@@ -73,6 +70,7 @@ module vga_core_640x480(
   assign hs = ~((h >= H_VIS+H_FP) && (h < H_VIS+H_FP+H_SYNC));
   assign vs = ~((v >= V_VIS+V_FP) && (v < V_VIS+V_FP+V_SYNC));
 
+  // VGA counters
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       h <= 10'd0; v <= 10'd0;
@@ -86,6 +84,7 @@ module vga_core_640x480(
     end
   end
 
+  // Simple color bar background (placeholder for Pac-Man maze rendering)
   always @(posedge pclk) begin
     if (h_vis && v_vis) begin
       case (h[9:7])
@@ -103,6 +102,7 @@ module vga_core_640x480(
     end
   end
 endmodule
+
 
 module sevenseg(input [3:0] x, output reg [6:0] seg);
   always @* begin
