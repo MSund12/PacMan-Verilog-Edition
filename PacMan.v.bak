@@ -1,4 +1,4 @@
-module PacMan(
+module top_de10lite_test(
   input  wire CLOCK_50,
   input  wire KEY0,                   // active-low reset on many Terasic boards
   output wire [9:0] LEDR,
