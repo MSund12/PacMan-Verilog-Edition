@@ -1,4 +1,4 @@
-module pacman(
+module blinky(
     input  wire        clk,
     input  wire        reset,
 
@@ -12,7 +12,7 @@ module pacman(
     input  wire        wallDown,
     input  wire        wallLeft,
     input  wire        wallRight,
-
+	 
     output reg [5:0]   blinkyX,
     output reg [5:0]   blinkyY
 );
@@ -23,11 +23,9 @@ Blinky (Red Ghost)
 
 Movement Logic for chase mode is target position should be set to pacman's current position
 
-
 Movement Logic for scatter mode is to go back to his corner. However, if he is has his speed increased 
 (happens twice per level based on how many dots remain) then he instead keeps on targeting pacman like 
 in chase mode but he still reverses during the beginning and end of scatter mode 
-
 
 Frighten mode is same as all other ghosts
 */
@@ -57,7 +55,7 @@ Frighten mode is same as all other ghosts
         end
     end
 
-    
+
     //Spawn points
     always @(posedge clk or posedge reset) begin
         if (reset) begin
@@ -83,4 +81,19 @@ endmodule
 
 
 
+// Blinky sprite: 16x16, 4-bit pixels (0=transparent, 7=yellow) from Blinky.hex
+module blinky_rom_16x16_4bpp (
+    input  wire [7:0] addr,   // 0 .. 255
+    output reg  [3:0] data
+);
+    reg [3:0] mem [0:256-1];
+
+    initial begin
+        $readmemh("Blinky.hex", mem);
+    end
+
+    always @* begin
+        data = mem[addr];
+    end
+endmodule
 
