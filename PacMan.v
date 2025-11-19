@@ -296,6 +296,87 @@ module vga_core_640x480(
   end
 
   // -------------------------
+  // Blinky (Red Ghost) integration
+  // -------------------------
+  // Convert pacman center position to tile coordinates (6-bit) for blinky
+  wire [5:0] pacman_tile_x = pac_local_x[9:3];  // 0..27, but blinky uses 6-bit
+  wire [5:0] pacman_tile_y = pac_local_y[9:3];  // 0..35, but blinky uses 6-bit
+
+  // Blinky position in tile coordinates (from blinky module)
+  wire [5:0] blinky_tile_x, blinky_tile_y;
+
+  // Convert blinky tile position to screen coordinates (center of tile)
+  wire [9:0] blinky_x = IMG_X0 + (blinky_tile_x << 3) + 4;  // tile_x*8 + 4 (center)
+  wire [9:0] blinky_y = IMG_Y0 + (blinky_tile_y << 3) + 4;  // tile_y*8 + 4 (center)
+
+  // Wall detection for blinky's current position (check all 4 directions)
+  wire [9:0] blinky_tile_idx = ((blinky_tile_y << 5) - (blinky_tile_y << 2)) + blinky_tile_x;
+  
+  wire blinky_wall_up, blinky_wall_down, blinky_wall_left, blinky_wall_right;
+  wire blinky_wall_up_rom, blinky_wall_down_rom, blinky_wall_left_rom, blinky_wall_right_rom;
+  
+  // Check walls in adjacent tiles (or treat boundaries as walls)
+  wire [9:0] blinky_tile_idx_up    = blinky_tile_idx - 10'd28;
+  wire [9:0] blinky_tile_idx_down  = blinky_tile_idx + 10'd28;
+  wire [9:0] blinky_tile_idx_left  = blinky_tile_idx - 10'd1;
+  wire [9:0] blinky_tile_idx_right = blinky_tile_idx + 10'd1;
+
+  level_rom ULEVEL_BLINKY_UP (
+    .tile_index(blinky_tile_idx_up),
+    .is_wall(blinky_wall_up_rom)
+  );
+  
+  level_rom ULEVEL_BLINKY_DOWN (
+    .tile_index(blinky_tile_idx_down),
+    .is_wall(blinky_wall_down_rom)
+  );
+  
+  level_rom ULEVEL_BLINKY_LEFT (
+    .tile_index(blinky_tile_idx_left),
+    .is_wall(blinky_wall_left_rom)
+  );
+  
+  level_rom ULEVEL_BLINKY_RIGHT (
+    .tile_index(blinky_tile_idx_right),
+    .is_wall(blinky_wall_right_rom)
+  );
+
+  // Treat boundaries as walls
+  assign blinky_wall_up    = (blinky_tile_y == 0) ? 1'b1 : blinky_wall_up_rom;
+  assign blinky_wall_down  = (blinky_tile_y == 35) ? 1'b1 : blinky_wall_down_rom;
+  assign blinky_wall_left  = (blinky_tile_x == 0) ? 1'b1 : blinky_wall_left_rom;
+  assign blinky_wall_right = (blinky_tile_x == 27) ? 1'b1 : blinky_wall_right_rom;
+
+  // Chase/scatter mode control (default to chase mode)
+  reg isChase, isScatter;
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      isChase <= 1'b1;
+      isScatter <= 1'b0;
+    end else begin
+      // For now, always chase. Can be extended later with timing logic
+      isChase <= 1'b1;
+      isScatter <= 1'b0;
+    end
+  end
+
+  // Instantiate blinky module
+  blinky UBLINKY (
+    .clk(pclk),
+    .reset(!rst_n),
+    .pacmanX(pacman_tile_x),
+    .pacmanY(pacman_tile_y),
+    .isChase(isChase),
+    .isScatter(isScatter),
+    .wallUp(blinky_wall_up),
+    .wallDown(blinky_wall_down),
+    .wallLeft(blinky_wall_left),
+    .wallRight(blinky_wall_right),
+    .blinkyX(blinky_tile_x),
+    .blinkyY(blinky_tile_y)
+  );
+
+  // -------------------------
   // Pac-Man sprite (16x16) using Pacman.hex
   // -------------------------
   // top-left of sprite box
@@ -323,6 +404,33 @@ module vga_core_640x480(
   wire pac_pix = in_pac_box && (pac_pix_data != 4'h0);
 
   // -------------------------
+  // Blinky sprite (16x16) using Blinky.hex
+  // -------------------------
+  // top-left of sprite box
+  wire [9:0] blinky_left = blinky_x - PAC_R;
+  wire [9:0] blinky_top  = blinky_y - PAC_R;
+
+  // sprite-local coordinates at this pixel
+  wire [9:0] blinky_spr_x_full = h_d - blinky_left;
+  wire [9:0] blinky_spr_y_full = v_d - blinky_top;
+
+  wire       in_blinky_box = (blinky_spr_x_full < SPR_W) && (blinky_spr_y_full < SPR_H);
+
+  wire [3:0] blinky_spr_x = blinky_spr_x_full[3:0];  // 0..15
+  wire [3:0] blinky_spr_y = blinky_spr_y_full[3:0];  // 0..15
+
+  wire [7:0] blinky_addr = (blinky_spr_y << 4) | blinky_spr_x;  // y*16 + x
+
+  wire [3:0] blinky_pix_data;
+  blinky_rom_16x16_4bpp UBLINKY_ROM (
+    .addr(blinky_addr),
+    .data(blinky_pix_data)
+  );
+
+  // Blinky pixel is "active" when inside box and sprite index != 0 (0 = transparent)
+  wire blinky_pix = in_blinky_box && (blinky_pix_data != 4'h0);
+
+  // -------------------------
   // RGB output with sprite overlay
   // -------------------------
   always @(posedge pclk or negedge rst_n) begin
@@ -337,6 +445,17 @@ module vga_core_640x480(
           case (pac_pix_data)
             4'h7: begin
               r <= 4'hF; g <= 4'hF; b <= 4'h0;   // yellow body
+            end
+            default: begin
+              // any other non-zero index: treat as white
+              r <= 4'hF; g <= 4'hF; b <= 4'hF;
+            end
+          endcase
+        end else if (blinky_pix) begin
+          // Blinky sprite from palette: 0=transparent, 7=red
+          case (blinky_pix_data)
+            4'h7: begin
+              r <= 4'hF; g <= 4'h0; b <= 4'h0;   // red body
             end
             default: begin
               // any other non-zero index: treat as white

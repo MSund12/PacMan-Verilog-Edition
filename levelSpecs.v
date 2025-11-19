@@ -106,22 +106,22 @@ always @(*) begin
         fright_ghost_speed      = 60;
 
         case (level)
-            5:  begin fright_time=5; flashes=5; end
-            6:  begin fright_time=5; flashes=5; end
-            7:  begin fright_time=2; flashes=5; end
-            8:  begin fright_time=2; flashes=5; end
-            9:  begin fright_time=1; flashes=3; end
-            10: begin fright_time=5; flashes=5; end
-            11: begin fright_time=2; flashes=3; end
-            12: begin fright_time=1; flashes=3; end
-            13: begin fright_time=1; flashes=3; end
-            14: begin fright_time=3; flashes=3; end
-            15: begin fright_time=1; flashes=3; end
-            16: begin fright_time=1; flashes=3; end
-            17: begin fright_time=0; flashes=0; end
-            18: begin fright_time=1; flashes=3; end
-            19: begin fright_time=1; flashes=3; end
-            20: begin fright_time=0; flashes=0; end
+            5:  begin fright_time=5; fright_flashes=5; end
+            6:  begin fright_time=5; fright_flashes=5; end
+            7:  begin fright_time=2; fright_flashes=5; end
+            8:  begin fright_time=2; fright_flashes=5; end
+            9:  begin fright_time=1; fright_flashes=3; end
+            10: begin fright_time=5; fright_flashes=5; end
+            11: begin fright_time=2; fright_flashes=3; end
+            12: begin fright_time=1; fright_flashes=3; end
+            13: begin fright_time=1; fright_flashes=3; end
+            14: begin fright_time=3; fright_flashes=3; end
+            15: begin fright_time=1; fright_flashes=3; end
+            16: begin fright_time=1; fright_flashes=3; end
+            17: begin fright_time=0; fright_flashes=0; end
+            18: begin fright_time=1; fright_flashes=3; end
+            19: begin fright_time=1; fright_flashes=3; end
+            20: begin fright_time=0; fright_flashes=0; end
         endcase
     end
 
