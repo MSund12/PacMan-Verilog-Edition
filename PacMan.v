@@ -530,6 +530,23 @@ module pacman_rom_16x16_4bpp (
 endmodule
 
 
+// Blinky sprite: 16x16, 4-bit pixels (0=transparent, 7=red) from Blinky.hex
+module blinky_rom_16x16_4bpp (
+    input  wire [7:0] addr,   // 0 .. 255
+    output reg  [3:0] data
+);
+    reg [3:0] mem [0:256-1];
+
+    initial begin
+        $readmemh("Blinky.hex", mem);
+    end
+
+    always @* begin
+        data = mem[addr];
+    end
+endmodule
+
+
 // 28 x 36 = 1008 tiles, 1 bit per tile: 0=path, 1=wall/dead space
 module level_rom (
     input  wire [9:0] tile_index,   // 0..1007 (y*28 + x)
