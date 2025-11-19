@@ -90,13 +90,7 @@ module vga_core_640x480(
   localparam IMG_X0 = (H_VIS-IMG_W)/2;  // (640-224)/2 = 208
   localparam IMG_Y0 = (V_VIS-IMG_H)/2;  // (480-288)/2 = 96
 
-  wire h_vis = (h < H_VIS);
-  wire v_vis = (v < V_VIS);
-
-  assign hs = ~((h >= H_VIS+H_FP) && (h < H_VIS+H_FP+H_SYNC));
-  assign vs = ~((v >= V_VIS+V_FP) && (v < V_VIS+V_FP+V_SYNC));
-
-  // Counters
+  // H/V counters (stage 0)
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       h <= 10'd0;
@@ -111,19 +105,47 @@ module vga_core_640x480(
     end
   end
 
-  // Image coordinate and address
-  wire in_img_area =
-        h_vis && v_vis &&
+  // Sync and "raw" visible using current counters (stage 0)
+  wire h_vis_raw = (h < H_VIS);
+  wire v_vis_raw = (v < V_VIS);
+
+  assign hs = ~((h >= H_VIS+H_FP) && (h < H_VIS+H_FP+H_SYNC));
+  assign vs = ~((v >= V_VIS+V_FP) && (v < V_VIS+V_FP+V_SYNC));
+
+  // ROM address based on current counters (stage 0)
+  wire in_img_area_addr =
+        h_vis_raw && v_vis_raw &&
         (h >= IMG_X0) && (h < IMG_X0 + IMG_W) &&
         (v >= IMG_Y0) && (v < IMG_Y0 + IMG_H);
 
-  wire [8:0] img_x = h - IMG_X0;  // 0..223
-  wire [8:0] img_y = v - IMG_Y0;  // 0..287
+  wire [8:0] img_x_addr = h - IMG_X0;  // 0..223 when in_img_area_addr
+  wire [8:0] img_y_addr = v - IMG_Y0;  // 0..287 when in_img_area_addr
 
-  // addr = img_y * 224 + img_x  (224 = 256 - 32)
-  wire [15:0] addr_y = (img_y << 8) - (img_y << 5); // y*256 - y*32 = y*224
-  wire [15:0] img_addr = addr_y + img_x;
+  wire [15:0] addr_y   = (img_y_addr << 8) - (img_y_addr << 5); // y*224
+  wire [15:0] img_addr = in_img_area_addr ? (addr_y + img_x_addr) : 16'd0;
 
+  // One-cycle delayed coordinates for display (stage 1)
+  reg [9:0] h_d, v_d;
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      h_d <= 10'd0;
+      v_d <= 10'd0;
+    end else begin
+      h_d <= h;
+      v_d <= v;
+    end
+  end
+
+  // Visible / image window for display stage (aligned with pix_data)
+  wire h_vis = (h_d < H_VIS);
+  wire v_vis = (v_d < V_VIS);
+
+  wire in_img_area =
+        h_vis && v_vis &&
+        (h_d >= IMG_X0) && (h_d < IMG_X0 + IMG_W) &&
+        (v_d >= IMG_Y0) && (v_d < IMG_Y0 + IMG_H);
+
+  // ROM: 4-bit pixels, 1-cycle latency
   wire [3:0] pix_data;
 
   image_rom_224x288_4bpp UIMG (
@@ -132,28 +154,49 @@ module vga_core_640x480(
     .data(pix_data)
   );
 
-  // Simple grayscale mapping of 4-bit pixel to RGB
-  always @(posedge pclk) begin
-    if (h_vis && v_vis) begin
-      if (in_img_area) begin
-        // grayscale: same value on R,G,B
-        r <= {pix_data[3:0]};
-        g <= {pix_data[3:0]};
-        b <= {pix_data[3:0]};
-      end else begin
-        // black outside image but still within visible area
-        r <= 4'h0;
-        g <= 4'h0;
-        b <= 4'h0;
-      end
-    end else begin
-      // blanking
+  // 4-bit palette: map index -> RGB (stage 2: pix_data aligned with h_d/v_d)
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
       r <= 4'h0;
       g <= 4'h0;
       b <= 4'h0;
+    end else begin
+      if (h_vis && v_vis) begin
+        if (in_img_area) begin
+          case (pix_data)
+            4'h0: begin
+              // background
+              r <= 4'h0; g <= 4'h0; b <= 4'h0;      // black
+            end
+            4'hC: begin
+              // main maze walls
+              r <= 4'h0; g <= 4'h0; b <= 4'hF;      // bright blue
+            end
+            4'hF: begin
+              // highlights / dots
+              r <= 4'hF; g <= 4'hF; b <= 4'hF;      // white
+            end
+            4'h7: begin
+              // rare colour
+              r <= 4'hF; g <= 4'h0; b <= 4'h0;      // red
+            end
+            default: begin
+              // anything else -> background
+              r <= 4'h0; g <= 4'h0; b <= 4'h0;
+            end
+          endcase
+        end else begin
+          // outside image but still in visible area
+          r <= 4'h0; g <= 4'h0; b <= 4'h0;
+        end
+      end else begin
+        // blanking
+        r <= 4'h0; g <= 4'h0; b <= 4'h0;
+      end
     end
   end
 endmodule
+
 
 
 // 224 x 288, 4-bit pixels: DEPTH = 224*288 = 64512
