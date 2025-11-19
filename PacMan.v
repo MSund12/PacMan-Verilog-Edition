@@ -1,6 +1,8 @@
 module PacMan(
   input  wire CLOCK_50,
   input  wire KEY0,
+  input  wire [9:0] SW,        // NEW: onboard switches
+
   output wire [9:0] LEDR,
   output wire [6:0] HEX0, HEX1,
   output wire [3:0] VGA_R,
@@ -26,6 +28,13 @@ module PacMan(
   vga_core_640x480 UCORE(
     .pclk(pclk),
     .rst_n(rst_n & pll_locked),
+
+    // NEW: movement controls from switches
+    .move_up   (SW[3]),
+    .move_down (SW[2]),
+    .move_left (SW[1]),
+    .move_right(SW[0]),
+
     .h(h),
     .v(v),
     .hs(hs),
@@ -58,9 +67,17 @@ module PacMan(
 endmodule
 
 
+
 module vga_core_640x480(
   input  wire        pclk,
   input  wire        rst_n,
+
+  // NEW: movement controls
+  input  wire        move_up,
+  input  wire        move_down,
+  input  wire        move_left,
+  input  wire        move_right,
+
   output reg  [9:0]  h,
   output reg  [9:0]  v,
   output wire        hs,
@@ -69,6 +86,8 @@ module vga_core_640x480(
   output reg  [3:0]  g,
   output reg  [3:0]  b
 );
+
+
   // 640x480 @ 60 Hz timing
   localparam H_VIS=640, H_FP=16, H_SYNC=96, H_BP=48, H_TOT=800;
   localparam V_VIS=480, V_FP=10, V_SYNC=2,  V_BP=33, V_TOT=525;
@@ -157,9 +176,21 @@ module vga_core_640x480(
     .data(pix_data)
   );
 
-  // -------------------------
+    // -------------------------
   // Pac-Man position and tile-based collision
   // -------------------------
+  // Pac-Man collision hitbox (14 wide × 15 tall)
+  localparam HIT_W  = 14;
+  localparam HIT_H  = 15;
+
+  // 14 wide → ±7 pixels from center
+  localparam HIT_RX = 7;
+
+  // 15 tall → -7 (top) to +8 (bottom)
+  localparam HIT_RY_UP   = 7;
+  localparam HIT_RY_DOWN = 8;
+
+
   reg [9:0] pac_x, pac_y;     // center position (screen coords)
   reg [1:0] pac_dir;          // 0=right,1=left,2=up,3=down
 
@@ -177,27 +208,54 @@ module vga_core_640x480(
       (pac_x >= IMG_X0) && (pac_x < IMG_X0 + IMG_W) &&
       (pac_y >= IMG_Y0) && (pac_y < IMG_Y0 + IMG_H);
 
-  // current tile (8x8) from center point
-  wire [4:0] pac_tile_x = pac_local_x[9:3];  // 0..27
-  wire [5:0] pac_tile_y = pac_local_y[9:3];  // 0..35
+  // Calculate step_px for this frame (combinational, based on current speed_acc)
+  wire [7:0] tmp_acc_calc = speed_acc + 8'd125;
+  wire [1:0] step_px_calc;
+  wire [7:0] tmp_acc_after_first;
+  wire [7:0] tmp_acc_after_second;
+  
+  assign tmp_acc_after_first = (tmp_acc_calc >= 8'd99) ? (tmp_acc_calc - 8'd99) : tmp_acc_calc;
+  assign step_px_calc = (tmp_acc_calc >= 8'd99) ? 2'd1 : 2'd0;
+  assign tmp_acc_after_second = (tmp_acc_after_first >= 8'd99) ? (tmp_acc_after_first - 8'd99) : tmp_acc_after_first;
+  wire [1:0] step_px_wire = step_px_calc + ((tmp_acc_after_first >= 8'd99) ? 2'd1 : 2'd0);
 
-  // next tile in current direction
-  reg [4:0] target_tile_x;
-  reg [5:0] target_tile_y;
-  always @* begin
-    target_tile_x = pac_tile_x;
-    target_tile_y = pac_tile_y;
-    case (pac_dir)
-      2'd0: if (pac_tile_x < TILES_X-1) target_tile_x = pac_tile_x + 1; // right
-      2'd1: if (pac_tile_x > 0)        target_tile_x = pac_tile_x - 1; // left
-      2'd2: if (pac_tile_y > 0)        target_tile_y = pac_tile_y - 1; // up
-      2'd3: if (pac_tile_y < TILES_Y-1) target_tile_y = pac_tile_y + 1; // down
-    endcase
-  end
+  // Calculate where Pac-Man would be after moving step_px_wire pixels
+  // This is used for collision detection before actually moving
+  wire [9:0] next_pac_local_x, next_pac_local_y;
+  assign next_pac_local_x = (pac_dir == 2'd0) ? (pac_local_x + step_px_wire) :
+                             (pac_dir == 2'd1) ? (pac_local_x - step_px_wire) :
+                             pac_local_x;
+  assign next_pac_local_y = (pac_dir == 2'd2) ? (pac_local_y - step_px_wire) :
+                             (pac_dir == 2'd3) ? (pac_local_y + step_px_wire) :
+                             pac_local_y;
+
+  // Check collision at the front edge of the hitbox AFTER movement
+  // This prevents Pac-Man from entering walls
+  wire [9:0] check_x, check_y;
+  assign check_x = (pac_dir == 2'd0) ? (next_pac_local_x + HIT_RX) :  // right: check right edge
+                    (pac_dir == 2'd1) ? ((next_pac_local_x >= HIT_RX) ? (next_pac_local_x - HIT_RX) : 10'd0) :  // left: check left edge
+                    next_pac_local_x;  // up/down: use center x
+    assign check_y =
+      (pac_dir == 2'd2) ?                       // moving up
+          ((next_pac_local_y >= HIT_RY_UP) ?
+              (next_pac_local_y - HIT_RY_UP) :
+              10'd0)
+    : (pac_dir == 2'd3) ?                       // moving down
+          (next_pac_local_y + HIT_RY_DOWN)
+    : next_pac_local_y;                         // left/right
+
+
+  // Clamp to valid image bounds
+  wire [9:0] check_x_clamped = (check_x > IMG_W-1) ? IMG_W-1 : check_x;
+  wire [9:0] check_y_clamped = (check_y > IMG_H-1) ? IMG_H-1 : check_y;
+
+  // Tile under the front edge of hitbox AFTER movement
+  wire [4:0] pac_tile_x = check_x_clamped[9:3];  // 0..27
+  wire [5:0] pac_tile_y = check_y_clamped[9:3];  // 0..35
 
   // linear tile index = tile_y*28 + tile_x (28 = 32 - 4)
-  wire [9:0] idx_y             = (target_tile_y << 5) - (target_tile_y << 2);
-  wire [9:0] target_tile_index = idx_y + target_tile_x;
+  wire [9:0] idx_y             = (pac_tile_y << 5) - (pac_tile_y << 2);
+  wire [9:0] target_tile_index = idx_y + pac_tile_x;
 
   wire wall_at_target;
   level_rom ULEVEL (
@@ -209,42 +267,117 @@ module vga_core_640x480(
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       // Pac-Man starting tile: (13, 26), facing left
-      pac_x    <= IMG_X0 + (14*8);     // = 316
-      pac_y    <= IMG_Y0 + (28*8) + 4;     // = 308
-      pac_dir  <= 2'd1;                    // left
+      pac_x     <= IMG_X0 + (14*8);        // = 316
+      pac_y     <= IMG_Y0 + (28*8) + 4;    // = 308
+      pac_dir   <= 2'd1;                   // left
       speed_acc <= 8'd0;
     end else begin
       if (frame_tick) begin
-        // fractional step accumulator: speed = 125/99 px per frame
-        tmp_acc = speed_acc + 8'd125;
-        step_px = 2'd0;
+        // Use the pre-calculated step_px_wire for movement
+        speed_acc <= tmp_acc_after_second;
 
-        // subtract denominator (99) up to twice per frame
-        if (tmp_acc >= 8'd99) begin
-          tmp_acc = tmp_acc - 8'd99;
-          step_px = step_px + 2'd1;
-        end
-        if (tmp_acc >= 8'd99) begin
-          tmp_acc = tmp_acc - 8'd99;
-          step_px = step_px + 2'd1;
-        end
-
-        speed_acc <= tmp_acc;
-
-        // move step_px pixels this frame if path is clear
-        if (step_px != 2'd0 && pac_in_maze && !wall_at_target) begin
+        // move step_px_wire pixels this frame if path is clear
+        if (step_px_wire != 2'd0 && pac_in_maze && !wall_at_target) begin
           case (pac_dir)
-            2'd0: pac_x <= pac_x + step_px;  // right
-            2'd1: pac_x <= pac_x - step_px;  // left
-            2'd2: pac_y <= pac_y - step_px;  // up
-            2'd3: pac_y <= pac_y + step_px;  // down
+            2'd0: pac_x <= pac_x + step_px_wire;  // right
+            2'd1: pac_x <= pac_x - step_px_wire;  // left
+            2'd2: pac_y <= pac_y - step_px_wire;  // up
+            2'd3: pac_y <= pac_y + step_px_wire;  // down
           endcase
         end
       end
 
-      // TODO: update pac_dir from buttons/switches here.
+      if (move_up)
+        pac_dir <= 2'd2;   // up
+      else if (move_down)
+        pac_dir <= 2'd3;   // down
+      else if (move_left)
+        pac_dir <= 2'd1;   // left
+      else if (move_right)
+        pac_dir <= 2'd0;   // right
     end
   end
+
+  // -------------------------
+  // Blinky (Red Ghost) integration
+  // -------------------------
+  // Convert pacman center position to tile coordinates (6-bit) for blinky
+  wire [5:0] pacman_tile_x = pac_local_x[9:3];  // 0..27, but blinky uses 6-bit
+  wire [5:0] pacman_tile_y = pac_local_y[9:3];  // 0..35, but blinky uses 6-bit
+
+  // Blinky position in tile coordinates (from blinky module)
+  wire [5:0] blinky_tile_x, blinky_tile_y;
+
+  // Convert blinky tile position to screen coordinates (center of tile)
+  wire [9:0] blinky_x = IMG_X0 + (blinky_tile_x << 3) + 4;  // tile_x*8 + 4 (center)
+  wire [9:0] blinky_y = IMG_Y0 + (blinky_tile_y << 3) + 4;  // tile_y*8 + 4 (center)
+
+  // Wall detection for blinky's current position (check all 4 directions)
+  wire [9:0] blinky_tile_idx = ((blinky_tile_y << 5) - (blinky_tile_y << 2)) + blinky_tile_x;
+  
+  wire blinky_wall_up, blinky_wall_down, blinky_wall_left, blinky_wall_right;
+  wire blinky_wall_up_rom, blinky_wall_down_rom, blinky_wall_left_rom, blinky_wall_right_rom;
+  
+  // Check walls in adjacent tiles (or treat boundaries as walls)
+  wire [9:0] blinky_tile_idx_up    = blinky_tile_idx - 10'd28;
+  wire [9:0] blinky_tile_idx_down  = blinky_tile_idx + 10'd28;
+  wire [9:0] blinky_tile_idx_left  = blinky_tile_idx - 10'd1;
+  wire [9:0] blinky_tile_idx_right = blinky_tile_idx + 10'd1;
+
+  level_rom ULEVEL_BLINKY_UP (
+    .tile_index(blinky_tile_idx_up),
+    .is_wall(blinky_wall_up_rom)
+  );
+  
+  level_rom ULEVEL_BLINKY_DOWN (
+    .tile_index(blinky_tile_idx_down),
+    .is_wall(blinky_wall_down_rom)
+  );
+  
+  level_rom ULEVEL_BLINKY_LEFT (
+    .tile_index(blinky_tile_idx_left),
+    .is_wall(blinky_wall_left_rom)
+  );
+  
+  level_rom ULEVEL_BLINKY_RIGHT (
+    .tile_index(blinky_tile_idx_right),
+    .is_wall(blinky_wall_right_rom)
+  );
+
+  // Treat boundaries as walls
+  assign blinky_wall_up    = (blinky_tile_y == 0) ? 1'b1 : blinky_wall_up_rom;
+  assign blinky_wall_down  = (blinky_tile_y == 35) ? 1'b1 : blinky_wall_down_rom;
+  assign blinky_wall_left  = (blinky_tile_x == 0) ? 1'b1 : blinky_wall_left_rom;
+  assign blinky_wall_right = (blinky_tile_x == 27) ? 1'b1 : blinky_wall_right_rom;
+
+  // Chase/scatter mode control (default to chase mode)
+  reg isChase, isScatter;
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      isChase <= 1'b1;
+      isScatter <= 1'b0;
+    end else begin
+      // For now, always chase. Can be extended later with timing logic
+      isChase <= 1'b1;
+      isScatter <= 1'b0;
+    end
+  end
+
+  // Instantiate blinky module
+  blinky UBLINKY (
+    .clk(pclk),
+    .reset(!rst_n),
+    .pacmanX(pacman_tile_x),
+    .pacmanY(pacman_tile_y),
+    .isChase(isChase),
+    .isScatter(isScatter),
+    .wallUp(blinky_wall_up),
+    .wallDown(blinky_wall_down),
+    .wallLeft(blinky_wall_left),
+    .wallRight(blinky_wall_right),
+    .blinkyX(blinky_tile_x),
+    .blinkyY(blinky_tile_y)
+  );
 
   // -------------------------
   // Pac-Man sprite (16x16) using Pacman.hex
@@ -274,6 +407,33 @@ module vga_core_640x480(
   wire pac_pix = in_pac_box && (pac_pix_data != 4'h0);
 
   // -------------------------
+  // Blinky sprite (16x16) using Blinky.hex
+  // -------------------------
+  // top-left of sprite box
+  wire [9:0] blinky_left = blinky_x - PAC_R;
+  wire [9:0] blinky_top  = blinky_y - PAC_R;
+
+  // sprite-local coordinates at this pixel
+  wire [9:0] blinky_spr_x_full = h_d - blinky_left;
+  wire [9:0] blinky_spr_y_full = v_d - blinky_top;
+
+  wire       in_blinky_box = (blinky_spr_x_full < SPR_W) && (blinky_spr_y_full < SPR_H);
+
+  wire [3:0] blinky_spr_x = blinky_spr_x_full[3:0];  // 0..15
+  wire [3:0] blinky_spr_y = blinky_spr_y_full[3:0];  // 0..15
+
+  wire [7:0] blinky_addr = (blinky_spr_y << 4) | blinky_spr_x;  // y*16 + x
+
+  wire [3:0] blinky_pix_data;
+  blinky_rom_16x16_4bpp UBLINKY_ROM (
+    .addr(blinky_addr),
+    .data(blinky_pix_data)
+  );
+
+  // Blinky pixel is "active" when inside box and sprite index != 0 (0 = transparent)
+  wire blinky_pix = in_blinky_box && (blinky_pix_data != 4'h0);
+
+  // -------------------------
   // RGB output with sprite overlay
   // -------------------------
   always @(posedge pclk or negedge rst_n) begin
@@ -288,6 +448,17 @@ module vga_core_640x480(
           case (pac_pix_data)
             4'h7: begin
               r <= 4'hF; g <= 4'hF; b <= 4'h0;   // yellow body
+            end
+            default: begin
+              // any other non-zero index: treat as white
+              r <= 4'hF; g <= 4'hF; b <= 4'hF;
+            end
+          endcase
+        end else if (blinky_pix) begin
+          // Blinky sprite from palette: 0=transparent, 7=red
+          case (blinky_pix_data)
+            4'h7: begin
+              r <= 4'hF; g <= 4'h0; b <= 4'h0;   // red body
             end
             default: begin
               // any other non-zero index: treat as white
@@ -379,4 +550,3 @@ module level_rom (
 
     assign is_wall = bits[tile_index];
 endmodule
-
