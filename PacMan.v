@@ -223,20 +223,25 @@ module vga_core_640x480(
                              (pac_dir == 2'd3) ? (pac_local_y + step_px_wire) :
                              pac_local_y;
 
-  // According to Pac-Man Dossier: "The location of the actor's center point 
-  // is what determines the tile it occupies at any given time."
-  // Check which tile Pac-Man's center will occupy AFTER movement
-  // Clamp to valid image bounds to prevent out-of-bounds access
-  // Note: next_pac_local_x/y are unsigned, so negative values wrap around
-  // We check if they exceed bounds by comparing with IMG_W/IMG_H
-  wire [9:0] check_x = (next_pac_local_x >= IMG_W) ? (IMG_W-1) : 
-                       next_pac_local_x;
-  wire [9:0] check_y = (next_pac_local_y >= IMG_H) ? (IMG_H-1) : 
-                       next_pac_local_y;
+  // Check collision using Pac-Man's outer pixels (leading edge) AFTER movement
+  // This prevents Pac-Man from entering walls by checking the front edge of the hitbox
+  wire [9:0] edge_x, edge_y;
+  
+  // Calculate the leading edge position based on movement direction
+  assign edge_x = (pac_dir == 2'd0) ? (next_pac_local_x + HIT_RX) :  // right: check right edge
+                   (pac_dir == 2'd1) ? ((next_pac_local_x >= HIT_RX) ? (next_pac_local_x - HIT_RX) : 10'd0) :  // left: check left edge
+                   next_pac_local_x;  // up/down: use center x
+  
+  assign edge_y = (pac_dir == 2'd2) ? ((next_pac_local_y >= HIT_RY) ? (next_pac_local_y - HIT_RY) : 10'd0) :  // up: check top edge
+                   (pac_dir == 2'd3) ? (next_pac_local_y + HIT_RY) :  // down: check bottom edge
+                   next_pac_local_y;  // left/right: use center y
 
-  // Tile that Pac-Man's center will occupy AFTER movement
+  // Clamp to valid image bounds to prevent out-of-bounds access
+  wire [9:0] check_x = (edge_x >= IMG_W) ? (IMG_W-1) : edge_x;
+  wire [9:0] check_y = (edge_y >= IMG_H) ? (IMG_H-1) : edge_y;
+
+  // Tile that Pac-Man's leading edge will occupy AFTER movement
   // Divide by 8 (shift right by 3) to get tile coordinates
-  // This matches the original Pac-Man behavior where center point determines tile
   wire [4:0] pac_tile_x = check_x[9:3];  // 0..27
   wire [5:0] pac_tile_y = check_y[9:3];  // 0..35
 
