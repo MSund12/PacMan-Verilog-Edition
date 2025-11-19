@@ -65,7 +65,7 @@ end
 always @(posedge clk or posedge reset) begin
     if (reset) begin
         blinkyX <= 14;   // Spawn tile X (CENTER TOP like arcade)
-        blinkyY <= 12;   // Spawn tile Y
+        blinkyY <= 14;   // Spawn tile Y
     end else begin
 
         // Horizontal priority (like Pac-Man arcade ghost AI)
