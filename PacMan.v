@@ -223,23 +223,22 @@ module vga_core_640x480(
                              (pac_dir == 2'd3) ? (pac_local_y + step_px_wire) :
                              pac_local_y;
 
-  // Check collision at the front edge of the hitbox AFTER movement
-  // This prevents Pac-Man from entering walls
-  wire [9:0] check_x, check_y;
-  assign check_x = (pac_dir == 2'd0) ? (next_pac_local_x + HIT_RX) :  // right: check right edge
-                    (pac_dir == 2'd1) ? ((next_pac_local_x >= HIT_RX) ? (next_pac_local_x - HIT_RX) : 10'd0) :  // left: check left edge
-                    next_pac_local_x;  // up/down: use center x
-  assign check_y = (pac_dir == 2'd2) ? ((next_pac_local_y >= HIT_RY) ? (next_pac_local_y - HIT_RY) : 10'd0) :  // up: check top edge
-                    (pac_dir == 2'd3) ? (next_pac_local_y + HIT_RY) :  // down: check bottom edge
-                    next_pac_local_y;  // left/right: use center y
+  // According to Pac-Man Dossier: "The location of the actor's center point 
+  // is what determines the tile it occupies at any given time."
+  // Check which tile Pac-Man's center will occupy AFTER movement
+  // Clamp to valid image bounds to prevent out-of-bounds access
+  // Note: next_pac_local_x/y are unsigned, so negative values wrap around
+  // We check if they exceed bounds by comparing with IMG_W/IMG_H
+  wire [9:0] check_x = (next_pac_local_x >= IMG_W) ? (IMG_W-1) : 
+                       next_pac_local_x;
+  wire [9:0] check_y = (next_pac_local_y >= IMG_H) ? (IMG_H-1) : 
+                       next_pac_local_y;
 
-  // Clamp to valid image bounds
-  wire [9:0] check_x_clamped = (check_x > IMG_W-1) ? IMG_W-1 : check_x;
-  wire [9:0] check_y_clamped = (check_y > IMG_H-1) ? IMG_H-1 : check_y;
-
-  // Tile under the front edge of hitbox AFTER movement
-  wire [4:0] pac_tile_x = check_x_clamped[9:3];  // 0..27
-  wire [5:0] pac_tile_y = check_y_clamped[9:3];  // 0..35
+  // Tile that Pac-Man's center will occupy AFTER movement
+  // Divide by 8 (shift right by 3) to get tile coordinates
+  // This matches the original Pac-Man behavior where center point determines tile
+  wire [4:0] pac_tile_x = check_x[9:3];  // 0..27
+  wire [5:0] pac_tile_y = check_y[9:3];  // 0..35
 
   // linear tile index = tile_y*28 + tile_x (28 = 32 - 4)
   wire [9:0] idx_y             = (pac_tile_y << 5) - (pac_tile_y << 2);
@@ -510,6 +509,23 @@ module pacman_rom_16x16_4bpp (
 
     initial begin
         $readmemh("Pacman.hex", mem);
+    end
+
+    always @* begin
+        data = mem[addr];
+    end
+endmodule
+
+
+// Blinky sprite: 16x16, 4-bit pixels (0=transparent, 7=red) from Blinky.hex
+module blinky_rom_16x16_4bpp (
+    input  wire [7:0] addr,   // 0 .. 255
+    output reg  [3:0] data
+);
+    reg [3:0] mem [0:256-1];
+
+    initial begin
+        $readmemh("Blinky.hex", mem);
     end
 
     always @* begin
