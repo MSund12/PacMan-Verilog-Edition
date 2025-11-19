@@ -9,7 +9,7 @@ module PacMan(
   output wire       VGA_HS,
   output wire       VGA_VS
 );
-  wire rst_n = KEY0;                // KEY0 is active-low, OK
+  wire rst_n = KEY0;                // KEY0 is active-low
   wire pclk, pll_locked;
 
   pll_50_to_25 UPLL(
@@ -52,22 +52,11 @@ module PacMan(
   assign LEDR[6] = v[8];
   assign LEDR[9:7] = 3'b000;
 
-  // Frame counter (unchanged)
-  reg [15:0] frame_cnt;
-  reg vs_d;
-  always @(posedge pclk or negedge rst_n) begin
-    if (!rst_n) begin
-      vs_d      <= 1'b0;
-      frame_cnt <= 16'h0000;
-    end else begin
-      vs_d <= vs;
-      if (vs_d && !vs) frame_cnt <= frame_cnt + 1'b1; // increment per frame
-    end
-  end
-
-  sevenseg HEXL(.x(frame_cnt[3:0]),  .seg(HEX0));
-  sevenseg HEXH(.x(frame_cnt[7:4]),  .seg(HEX1));
+  // Turn off seven-seg displays (DE10-Lite HEX are active-low)
+  assign HEX0 = 7'b1111111;
+  assign HEX1 = 7'b1111111;
 endmodule
+
 
 module vga_core_640x480(
   input  wire        pclk,
@@ -90,7 +79,20 @@ module vga_core_640x480(
   localparam IMG_X0 = (H_VIS-IMG_W)/2;  // (640-224)/2 = 208
   localparam IMG_Y0 = (V_VIS-IMG_H)/2;  // (480-288)/2 = 96
 
+  // Tile grid: 28 x 36 tiles of 8x8 pixels
+  localparam TILE_W   = 8;
+  localparam TILE_H   = 8;
+  localparam TILES_X  = IMG_W / TILE_W;   // 224/8 = 28
+  localparam TILES_Y  = IMG_H / TILE_H;   // 288/8 = 36
+
+  // Pac-Man parameters
+  localparam PAC_R = 8;        // sprite "radius" (16x16)
+  localparam SPR_W = 16;
+  localparam SPR_H = 16;
+
+  // -------------------------
   // H/V counters (stage 0)
+  // -------------------------
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       h <= 10'd0;
@@ -105,7 +107,9 @@ module vga_core_640x480(
     end
   end
 
-  // Sync and "raw" visible using current counters (stage 0)
+  wire frame_tick = (h == 10'd0 && v == 10'd0);
+
+  // Sync and raw visible (stage 0)
   wire h_vis_raw = (h < H_VIS);
   wire v_vis_raw = (v < V_VIS);
 
@@ -145,16 +149,118 @@ module vga_core_640x480(
         (h_d >= IMG_X0) && (h_d < IMG_X0 + IMG_W) &&
         (v_d >= IMG_Y0) && (v_d < IMG_Y0 + IMG_H);
 
-  // ROM: 4-bit pixels, 1-cycle latency
+  // Maze ROM: 4-bit pixels, 1-cycle latency (WithoutDots.hex)
   wire [3:0] pix_data;
-
   image_rom_224x288_4bpp UIMG (
     .clk (pclk),
     .addr(img_addr),
     .data(pix_data)
   );
 
-  // 4-bit palette: map index -> RGB (stage 2: pix_data aligned with h_d/v_d)
+  // -------------------------
+  // Pac-Man position and tile-based collision
+  // -------------------------
+  reg [9:0] pac_x, pac_y;   // center position (screen coords)
+  reg [1:0] pac_dir;        // 0=right,1=left,2=up,3=down
+  reg [7:0] move_div;
+
+  // center relative to maze origin (unsigned; only used when inside maze)
+  wire [9:0] pac_local_x = pac_x - IMG_X0;
+  wire [9:0] pac_local_y = pac_y - IMG_Y0;
+
+  wire pac_in_maze =
+      (pac_x >= IMG_X0) && (pac_x < IMG_X0 + IMG_W) &&
+      (pac_y >= IMG_Y0) && (pac_y < IMG_Y0 + IMG_H);
+
+  // current tile (8x8) from center point
+  wire [4:0] pac_tile_x = pac_local_x[9:3];  // 0..27
+  wire [5:0] pac_tile_y = pac_local_y[9:3];  // 0..35
+
+  // next tile in current direction
+  reg [4:0] target_tile_x;
+  reg [5:0] target_tile_y;
+  always @* begin
+    target_tile_x = pac_tile_x;
+    target_tile_y = pac_tile_y;
+    case (pac_dir)
+      2'd0: if (pac_tile_x < TILES_X-1) target_tile_x = pac_tile_x + 1; // right
+      2'd1: if (pac_tile_x > 0)        target_tile_x = pac_tile_x - 1; // left
+      2'd2: if (pac_tile_y > 0)        target_tile_y = pac_tile_y - 1; // up
+      2'd3: if (pac_tile_y < TILES_Y-1) target_tile_y = pac_tile_y + 1; // down
+    endcase
+  end
+
+  // linear tile index = tile_y*28 + tile_x (28 = 32 - 4)
+  wire [9:0] idx_y             = (target_tile_y << 5) - (target_tile_y << 2);
+  wire [9:0] target_tile_index = idx_y + target_tile_x;
+
+  wire wall_at_target;
+  level_rom ULEVEL (
+    .tile_index(target_tile_index),
+    .is_wall   (wall_at_target)
+  );
+
+  // move once per N frames, blocked by walls
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      pac_x    <= IMG_X0 + (IMG_W/2);
+      pac_y    <= IMG_Y0 + (IMG_H/2);
+      pac_dir  <= 2'd0;   // right
+      move_div <= 8'd0;
+    end else begin
+      if (frame_tick) begin
+        move_div <= move_div + 8'd1;
+
+        if (move_div == 8'd0) begin
+          if (pac_in_maze && !wall_at_target) begin
+            case (pac_dir)
+              2'd0: pac_x <= pac_x + 1;  // right
+              2'd1: pac_x <= pac_x - 1;  // left
+              2'd2: pac_y <= pac_y - 1;  // up
+              2'd3: pac_y <= pac_y + 1;  // down
+            endcase
+          end
+        end
+      end
+
+      // TODO: update pac_dir from buttons/switches here, e.g.:
+      // if (btn_left)  pac_dir <= 2'd1;
+      // if (btn_right) pac_dir <= 2'd0;
+      // etc.
+    end
+  end
+
+  // -------------------------
+  // Pac-Man sprite (16x16) using Pacman.hex
+  // -------------------------
+  // top-left of sprite box
+  wire [9:0] pac_left = pac_x - PAC_R;
+  wire [9:0] pac_top  = pac_y - PAC_R;
+
+  // sprite-local coordinates at this pixel
+  wire [9:0] spr_x_full = h_d - pac_left;
+  wire [9:0] spr_y_full = v_d - pac_top;
+
+  wire       in_pac_box = (spr_x_full < SPR_W) && (spr_y_full < SPR_H);
+
+  // use low 4 bits (0..15) for address
+  wire [3:0] spr_x = spr_x_full[3:0];
+  wire [3:0] spr_y = spr_y_full[3:0];
+
+  wire [7:0] pac_addr = (spr_y << 4) | spr_x;  // y*16 + x
+
+  wire [3:0] pac_pix_data;
+  pacman_rom_16x16_4bpp UPAC (
+    .addr(pac_addr),
+    .data(pac_pix_data)
+  );
+
+  // Pac-Man pixel is "active" when inside box and sprite index != 0 (0 = transparent)
+  wire pac_pix = in_pac_box && (pac_pix_data != 4'h0);
+
+  // -------------------------
+  // RGB output with sprite overlay
+  // -------------------------
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       r <= 4'h0;
@@ -162,41 +268,45 @@ module vga_core_640x480(
       b <= 4'h0;
     end else begin
       if (h_vis && v_vis) begin
-        if (in_img_area) begin
-          case (pix_data)
-            4'h0: begin
-              // background
-              r <= 4'h0; g <= 4'h0; b <= 4'h0;      // black
-            end
-            4'hC: begin
-              // main maze walls
-              r <= 4'h0; g <= 4'h0; b <= 4'hF;      // bright blue
-            end
-            4'hF: begin
-              // highlights / dots
-              r <= 4'hF; g <= 4'hF; b <= 4'hF;      // white
-            end
+        if (pac_pix) begin
+          // Pac-Man sprite from palette: 0=transparent, 7=yellow
+          case (pac_pix_data)
             4'h7: begin
-              // rare colour
-              r <= 4'hF; g <= 4'h0; b <= 4'h0;      // red
+              r <= 4'hF; g <= 4'hF; b <= 4'h0;   // yellow body
             end
             default: begin
-              // anything else -> background
+              // any other non-zero index: treat as white
+              r <= 4'hF; g <= 4'hF; b <= 4'hF;
+            end
+          endcase
+        end else if (in_img_area) begin
+          // Maze from ROM
+          case (pix_data)
+            4'h0: begin
+              r <= 4'h0; g <= 4'h0; b <= 4'h0;      // background
+            end
+            4'hC: begin
+              r <= 4'h0; g <= 4'h0; b <= 4'hF;      // blue walls
+            end
+            4'hF: begin
+              r <= 4'hF; g <= 4'hF; b <= 4'hF;      // white dots
+            end
+            4'h7: begin
+              r <= 4'hF; g <= 4'h0; b <= 4'h0;      // magenta/red accents
+            end
+            default: begin
               r <= 4'h0; g <= 4'h0; b <= 4'h0;
             end
           endcase
         end else begin
-          // outside image but still in visible area
           r <= 4'h0; g <= 4'h0; b <= 4'h0;
         end
       end else begin
-        // blanking
-        r <= 4'h0; g <= 4'h0; b <= 4'h0;
+        r <= 4'h0; g <= 4'h0; b <= 4'h0;            // blanking
       end
     end
   end
 endmodule
-
 
 
 // 224 x 288, 4-bit pixels: DEPTH = 224*288 = 64512
@@ -217,26 +327,41 @@ module image_rom_224x288_4bpp (
 endmodule
 
 
+// Pac-Man sprite: 16x16, 4-bit pixels (0=transparent, 7=yellow) from Pacman.hex
+module pacman_rom_16x16_4bpp (
+    input  wire [7:0] addr,   // 0 .. 255
+    output reg  [3:0] data
+);
+    reg [3:0] mem [0:256-1];
 
-module sevenseg(input [3:0] x, output reg [6:0] seg);
-  always @* begin
-    case (x)
-      4'h0: seg=7'b1000000;
-      4'h1: seg=7'b1111001;
-      4'h2: seg=7'b0100100;
-      4'h3: seg=7'b0110000;
-      4'h4: seg=7'b0011001;
-      4'h5: seg=7'b0010010;
-      4'h6: seg=7'b0000010;
-      4'h7: seg=7'b1111000;
-      4'h8: seg=7'b0000000;
-      4'h9: seg=7'b0010000;
-      4'hA: seg=7'b0001000;
-      4'hB: seg=7'b0000011;
-      4'hC: seg=7'b1000110;
-      4'hD: seg=7'b0100001;
-      4'hE: seg=7'b0000110;
-      default: seg=7'b0001110;
-    endcase
-  end
+    initial begin
+        $readmemh("Pacman.hex", mem);
+    end
+
+    always @* begin
+        data = mem[addr];
+    end
 endmodule
+
+
+// 28 x 36 = 1008 tiles, 1 bit per tile: 0=path, 1=wall/dead space
+module level_rom (
+    input  wire [9:0] tile_index,   // 0..1007 (y*28 + x)
+    output wire       is_wall
+);
+    // Memory: 1008 entries, 1 bit each
+    reg bits [0:1007];
+
+    integer i;
+    initial begin
+        // Initialize to 0 in case file is missing/short
+        for (i = 0; i < 1008; i = i + 1)
+            bits[i] = 1'b0;
+
+        // Load 0/1 values from file: one bit per line
+        $readmemb("level_map.bin", bits);
+    end
+
+    assign is_wall = bits[tile_index];
+endmodule
+
