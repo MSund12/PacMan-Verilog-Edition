@@ -202,40 +202,44 @@ module vga_core_640x480(
       (pac_x >= IMG_X0) && (pac_x < IMG_X0 + IMG_W) &&
       (pac_y >= IMG_Y0) && (pac_y < IMG_Y0 + IMG_H);
 
-  // Sample position at the FRONT of the 14x15 hitbox in current direction
-  reg [9:0] sample_x, sample_y;
-  always @* begin
-    sample_x = pac_local_x;
-    sample_y = pac_local_y;
-    case (pac_dir)
-      2'd0: begin // right
-        sample_x = pac_local_x + HIT_RX;
-        if (sample_x > IMG_W-1)
-          sample_x = IMG_W-1;
-      end
-      2'd1: begin // left
-        if (pac_local_x > HIT_RX)
-          sample_x = pac_local_x - HIT_RX;
-        else
-          sample_x = 10'd0;
-      end
-      2'd2: begin // up
-        if (pac_local_y > HIT_RY)
-          sample_y = pac_local_y - HIT_RY;
-        else
-          sample_y = 10'd0;
-      end
-      2'd3: begin // down
-        sample_y = pac_local_y + HIT_RY;
-        if (sample_y > IMG_H-1)
-          sample_y = IMG_H-1;
-      end
-    endcase
-  end
+  // Calculate step_px for this frame (combinational, based on current speed_acc)
+  wire [7:0] tmp_acc_calc = speed_acc + 8'd125;
+  wire [1:0] step_px_calc;
+  wire [7:0] tmp_acc_after_first;
+  wire [7:0] tmp_acc_after_second;
+  
+  assign tmp_acc_after_first = (tmp_acc_calc >= 8'd99) ? (tmp_acc_calc - 8'd99) : tmp_acc_calc;
+  assign step_px_calc = (tmp_acc_calc >= 8'd99) ? 2'd1 : 2'd0;
+  assign tmp_acc_after_second = (tmp_acc_after_first >= 8'd99) ? (tmp_acc_after_first - 8'd99) : tmp_acc_after_first;
+  wire [1:0] step_px_wire = step_px_calc + ((tmp_acc_after_first >= 8'd99) ? 2'd1 : 2'd0);
 
-  // Tile under the sampled (front-of-hitbox) position
-  wire [4:0] pac_tile_x = sample_x[9:3];  // 0..27
-  wire [5:0] pac_tile_y = sample_y[9:3];  // 0..35
+  // Calculate where Pac-Man would be after moving step_px_wire pixels
+  // This is used for collision detection before actually moving
+  wire [9:0] next_pac_local_x, next_pac_local_y;
+  assign next_pac_local_x = (pac_dir == 2'd0) ? (pac_local_x + step_px_wire) :
+                             (pac_dir == 2'd1) ? (pac_local_x - step_px_wire) :
+                             pac_local_x;
+  assign next_pac_local_y = (pac_dir == 2'd2) ? (pac_local_y - step_px_wire) :
+                             (pac_dir == 2'd3) ? (pac_local_y + step_px_wire) :
+                             pac_local_y;
+
+  // Check collision at the front edge of the hitbox AFTER movement
+  // This prevents Pac-Man from entering walls
+  wire [9:0] check_x, check_y;
+  assign check_x = (pac_dir == 2'd0) ? (next_pac_local_x + HIT_RX) :  // right: check right edge
+                    (pac_dir == 2'd1) ? ((next_pac_local_x >= HIT_RX) ? (next_pac_local_x - HIT_RX) : 10'd0) :  // left: check left edge
+                    next_pac_local_x;  // up/down: use center x
+  assign check_y = (pac_dir == 2'd2) ? ((next_pac_local_y >= HIT_RY) ? (next_pac_local_y - HIT_RY) : 10'd0) :  // up: check top edge
+                    (pac_dir == 2'd3) ? (next_pac_local_y + HIT_RY) :  // down: check bottom edge
+                    next_pac_local_y;  // left/right: use center y
+
+  // Clamp to valid image bounds
+  wire [9:0] check_x_clamped = (check_x > IMG_W-1) ? IMG_W-1 : check_x;
+  wire [9:0] check_y_clamped = (check_y > IMG_H-1) ? IMG_H-1 : check_y;
+
+  // Tile under the front edge of hitbox AFTER movement
+  wire [4:0] pac_tile_x = check_x_clamped[9:3];  // 0..27
+  wire [5:0] pac_tile_y = check_y_clamped[9:3];  // 0..35
 
   // linear tile index = tile_y*28 + tile_x (28 = 32 - 4)
   wire [9:0] idx_y             = (pac_tile_y << 5) - (pac_tile_y << 2);
@@ -257,29 +261,16 @@ module vga_core_640x480(
       speed_acc <= 8'd0;
     end else begin
       if (frame_tick) begin
-        // fractional step accumulator: speed = 125/99 px per frame
-        tmp_acc = speed_acc + 8'd125;
-        step_px = 2'd0;
+        // Use the pre-calculated step_px_wire for movement
+        speed_acc <= tmp_acc_after_second;
 
-        // subtract denominator (99) up to twice per frame
-        if (tmp_acc >= 8'd99) begin
-          tmp_acc = tmp_acc - 8'd99;
-          step_px = step_px + 2'd1;
-        end
-        if (tmp_acc >= 8'd99) begin
-          tmp_acc = tmp_acc - 8'd99;
-          step_px = step_px + 2'd1;
-        end
-
-        speed_acc <= tmp_acc;
-
-        // move step_px pixels this frame if path is clear
-        if (step_px != 2'd0 && pac_in_maze && !wall_at_target) begin
+        // move step_px_wire pixels this frame if path is clear
+        if (step_px_wire != 2'd0 && pac_in_maze && !wall_at_target) begin
           case (pac_dir)
-            2'd0: pac_x <= pac_x + step_px;  // right
-            2'd1: pac_x <= pac_x - step_px;  // left
-            2'd2: pac_y <= pac_y - step_px;  // up
-            2'd3: pac_y <= pac_y + step_px;  // down
+            2'd0: pac_x <= pac_x + step_px_wire;  // right
+            2'd1: pac_x <= pac_x - step_px_wire;  // left
+            2'd2: pac_y <= pac_y - step_px_wire;  // up
+            2'd3: pac_y <= pac_y + step_px_wire;  // down
           endcase
         end
       end
