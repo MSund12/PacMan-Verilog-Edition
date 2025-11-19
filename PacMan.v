@@ -179,11 +179,17 @@ module vga_core_640x480(
     // -------------------------
   // Pac-Man position and tile-based collision
   // -------------------------
-  // Visual sprite is still 16x16, but collision hitbox is 14x15
+  // Pac-Man collision hitbox (14 wide × 15 tall)
   localparam HIT_W  = 14;
   localparam HIT_H  = 15;
-  localparam HIT_RX = HIT_W/2;  // 7 pixels (left/right)
-  localparam HIT_RY = HIT_H/2;  // 7 pixels (up/down)
+
+  // 14 wide → ±7 pixels from center
+  localparam HIT_RX = 7;
+
+  // 15 tall → -7 (top) to +8 (bottom)
+  localparam HIT_RY_UP   = 7;
+  localparam HIT_RY_DOWN = 8;
+
 
   reg [9:0] pac_x, pac_y;     // center position (screen coords)
   reg [1:0] pac_dir;          // 0=right,1=left,2=up,3=down
@@ -223,27 +229,29 @@ module vga_core_640x480(
                              (pac_dir == 2'd3) ? (pac_local_y + step_px_wire) :
                              pac_local_y;
 
-  // Check collision using Pac-Man's outer pixels (leading edge) AFTER movement
-  // This prevents Pac-Man from entering walls by checking the front edge of the hitbox
-  wire [9:0] edge_x, edge_y;
-  
-  // Calculate the leading edge position based on movement direction
-  assign edge_x = (pac_dir == 2'd0) ? (next_pac_local_x + HIT_RX) :  // right: check right edge
-                   (pac_dir == 2'd1) ? ((next_pac_local_x >= HIT_RX) ? (next_pac_local_x - HIT_RX) : 10'd0) :  // left: check left edge
-                   next_pac_local_x;  // up/down: use center x
-  
-  assign edge_y = (pac_dir == 2'd2) ? ((next_pac_local_y >= HIT_RY) ? (next_pac_local_y - HIT_RY) : 10'd0) :  // up: check top edge
-                   (pac_dir == 2'd3) ? (next_pac_local_y + HIT_RY) :  // down: check bottom edge
-                   next_pac_local_y;  // left/right: use center y
+  // Check collision at the front edge of the hitbox AFTER movement
+  // This prevents Pac-Man from entering walls
+  wire [9:0] check_x, check_y;
+  assign check_x = (pac_dir == 2'd0) ? (next_pac_local_x + HIT_RX) :  // right: check right edge
+                    (pac_dir == 2'd1) ? ((next_pac_local_x >= HIT_RX) ? (next_pac_local_x - HIT_RX) : 10'd0) :  // left: check left edge
+                    next_pac_local_x;  // up/down: use center x
+    assign check_y =
+      (pac_dir == 2'd2) ?                       // moving up
+          ((next_pac_local_y >= HIT_RY_UP) ?
+              (next_pac_local_y - HIT_RY_UP) :
+              10'd0)
+    : (pac_dir == 2'd3) ?                       // moving down
+          (next_pac_local_y + HIT_RY_DOWN)
+    : next_pac_local_y;                         // left/right
 
-  // Clamp to valid image bounds to prevent out-of-bounds access
-  wire [9:0] check_x = (edge_x >= IMG_W) ? (IMG_W-1) : edge_x;
-  wire [9:0] check_y = (edge_y >= IMG_H) ? (IMG_H-1) : edge_y;
 
-  // Tile that Pac-Man's leading edge will occupy AFTER movement
-  // Divide by 8 (shift right by 3) to get tile coordinates
-  wire [4:0] pac_tile_x = check_x[9:3];  // 0..27
-  wire [5:0] pac_tile_y = check_y[9:3];  // 0..35
+  // Clamp to valid image bounds
+  wire [9:0] check_x_clamped = (check_x > IMG_W-1) ? IMG_W-1 : check_x;
+  wire [9:0] check_y_clamped = (check_y > IMG_H-1) ? IMG_H-1 : check_y;
+
+  // Tile under the front edge of hitbox AFTER movement
+  wire [4:0] pac_tile_x = check_x_clamped[9:3];  // 0..27
+  wire [5:0] pac_tile_y = check_y_clamped[9:3];  // 0..35
 
   // linear tile index = tile_y*28 + tile_x (28 = 32 - 4)
   wire [9:0] idx_y             = (pac_tile_y << 5) - (pac_tile_y << 2);
@@ -522,23 +530,6 @@ module pacman_rom_16x16_4bpp (
 endmodule
 
 
-// Blinky sprite: 16x16, 4-bit pixels (0=transparent, 7=red) from Blinky.hex
-module blinky_rom_16x16_4bpp (
-    input  wire [7:0] addr,   // 0 .. 255
-    output reg  [3:0] data
-);
-    reg [3:0] mem [0:256-1];
-
-    initial begin
-        $readmemh("Blinky.hex", mem);
-    end
-
-    always @* begin
-        data = mem[addr];
-    end
-endmodule
-
-
 // 28 x 36 = 1008 tiles, 1 bit per tile: 0=path, 1=wall/dead space
 module level_rom (
     input  wire [9:0] tile_index,   // 0..1007 (y*28 + x)
@@ -559,4 +550,3 @@ module level_rom (
 
     assign is_wall = bits[tile_index];
 endmodule
-
