@@ -2,19 +2,20 @@ module blinky(
     input  wire        clk,
     input  wire        reset,
 
-    input  wire [5:0]  pacmanX,
-    input  wire [5:0]  pacmanY,
+    input  wire [5:0]  pacmanX,   // pacman tile X (0..27)
+    input  wire [5:0]  pacmanY,   // pacman tile Y (0..35)
 
     input  wire        isChase,
     input  wire        isScatter,
 
+    // Now tile-based wall indicators, already provided by Pac-Man code
     input  wire        wallUp,
     input  wire        wallDown,
     input  wire        wallLeft,
     input  wire        wallRight,
-	 
-    output reg [5:0]   blinkyX,
-    output reg [5:0]   blinkyY
+
+    output reg [5:0]   blinkyX,   // tile X (0..27)
+    output reg [5:0]   blinkyY    // tile Y (0..35)
 );
 
 
@@ -23,77 +24,64 @@ Blinky (Red Ghost)
 
 Movement Logic for chase mode is target position should be set to pacman's current position
 
-Movement Logic for scatter mode is to go back to his corner. However, if he is has his speed increased 
+Movement Logic for scatter mode is to go back to his corner. However, if he has his speed increased 
 (happens twice per level based on how many dots remain) then he instead keeps on targeting pacman like 
 in chase mode but he still reverses during the beginning and end of scatter mode 
 
 Frighten mode is same as all other ghosts
 */
 
+// Blinky’s scatter corner is top right
+localparam [5:0] CORNER_X = 27;   // top-right of the 28×36 grid
+localparam [5:0] CORNER_Y = 0;
 
-    // Blinky’s scatter corner is top right
-    localparam [5:0] CORNER_X = 0;
-    localparam [5:0] CORNER_Y = 0;
+reg [5:0] targetX;
+reg [5:0] targetY;
 
-    reg [5:0] targetX;
-    reg [5:0] targetY;
 
-    
-    // Set target position in chase (pacman) or go to corner in scatter mode
-    always @(*) begin
-        if (isChase) begin
-            targetX = pacmanX;
-            targetY = pacmanY;
-        end
-        else if (isScatter) begin
-            targetX = CORNER_X;
-            targetY = CORNER_Y;
-        end
-        else begin
-            targetX = pacmanX; 
-            targetY = pacmanY;
-        end
+// -------------------------------------------------------
+// Target selection
+// -------------------------------------------------------
+always @(*) begin
+    if (isChase) begin
+        targetX = pacmanX;
+        targetY = pacmanY;
     end
-
-
-    //Spawn points
-    always @(posedge clk or posedge reset) begin
-        if (reset) begin
-            blinkyX <= 0; //x cordinate of pixel where Blinky spawns in the map
-            blinkyY <= 0; //y cordinate of pixel where Blinky spawns in the map
-        end
-        else begin
-            // Horizontal move
-            if (targetX > blinkyX && !wallRight)
-                blinkyX <= blinkyX + 1;
-            else if (targetX < blinkyX && !wallLeft)
-                blinkyX <= blinkyX - 1;
-
-            // If not moving horizontally then move vertically
-            else if (targetY > blinkyY && !wallDown)
-                blinkyY <= blinkyY + 1;
-            else if (targetY < blinkyY && !wallUp)
-                blinkyY <= blinkyY - 1;
-        end
+    else if (isScatter) begin
+        targetX = CORNER_X;
+        targetY = CORNER_Y;
     end
-
-endmodule 
-
-
-
-// Blinky sprite: 16x16, 4-bit pixels (0=transparent, 7=yellow) from Blinky.hex
-module blinky_rom_16x16_4bpp (
-    input  wire [7:0] addr,   // 0 .. 255
-    output reg  [3:0] data
-);
-    reg [3:0] mem [0:256-1];
-
-    initial begin
-        $readmemh("Blinky.hex", mem);
+    else begin
+        targetX = pacmanX;
+        targetY = pacmanY;
     end
+end
 
-    always @* begin
-        data = mem[addr];
+
+// -------------------------------------------------------
+// Tile-based movement
+// Moves exactly 1 tile at a time, using the same tile grid Pac-Man uses
+// -------------------------------------------------------
+always @(posedge clk or posedge reset) begin
+    if (reset) begin
+        blinkyX <= 14;   // Spawn tile X (CENTER TOP like arcade)
+        blinkyY <= 12;   // Spawn tile Y
+    end else begin
+
+        // Horizontal priority (like Pac-Man arcade ghost AI)
+        if (targetX > blinkyX && !wallRight)
+            blinkyX <= blinkyX + 1;
+        else if (targetX < blinkyX && !wallLeft)
+            blinkyX <= blinkyX - 1;
+
+        // If blocked horizontally, attempt vertical
+        else if (targetY > blinkyY && !wallDown)
+            blinkyY <= blinkyY + 1;
+        else if (targetY < blinkyY && !wallUp)
+            blinkyY <= blinkyY - 1;
+
+        // If both X and Y are blocked, Blinky stays in place
     end
+end
+
 endmodule
-
