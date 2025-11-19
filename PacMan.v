@@ -85,8 +85,8 @@ module vga_core_640x480(
   localparam TILES_X  = IMG_W / TILE_W;   // 224/8 = 28
   localparam TILES_Y  = IMG_H / TILE_H;   // 288/8 = 36
 
-  // Pac-Man parameters
-  localparam PAC_R = 8;        // sprite "radius" (16x16)
+  // Pac-Man sprite parameters
+  localparam PAC_R = 8;        // 16x16 sprite radius
   localparam SPR_W = 16;
   localparam SPR_H = 16;
 
@@ -116,7 +116,7 @@ module vga_core_640x480(
   assign hs = ~((h >= H_VIS+H_FP) && (h < H_VIS+H_FP+H_SYNC));
   assign vs = ~((v >= V_VIS+V_FP) && (v < V_VIS+V_FP+V_SYNC));
 
-  // ROM address based on current counters (stage 0)
+  // ROM address for maze bitmap (stage 0)
   wire in_img_area_addr =
         h_vis_raw && v_vis_raw &&
         (h >= IMG_X0) && (h < IMG_X0 + IMG_W) &&
@@ -149,7 +149,7 @@ module vga_core_640x480(
         (h_d >= IMG_X0) && (h_d < IMG_X0 + IMG_W) &&
         (v_d >= IMG_Y0) && (v_d < IMG_Y0 + IMG_H);
 
-  // Maze ROM: 4-bit pixels, 1-cycle latency (WithoutDots.hex)
+  // Maze ROM: 4-bit pixels, 1-cycle latency
   wire [3:0] pix_data;
   image_rom_224x288_4bpp UIMG (
     .clk (pclk),
@@ -160,9 +160,14 @@ module vga_core_640x480(
   // -------------------------
   // Pac-Man position and tile-based collision
   // -------------------------
-  reg [9:0] pac_x, pac_y;   // center position (screen coords)
-  reg [1:0] pac_dir;        // 0=right,1=left,2=up,3=down
-  reg [7:0] move_div;
+  reg [9:0] pac_x, pac_y;     // center position (screen coords)
+  reg [1:0] pac_dir;          // 0=right,1=left,2=up,3=down
+
+  // fractional speed accumulator for 125/99 pixels per frame
+  // (≈ 75.7576 px/s at 60 Hz)
+  reg [7:0] speed_acc;        // remainder modulo 99
+  reg [7:0] tmp_acc;
+  reg [1:0] step_px;          // 0,1,2 pixels this frame
 
   // center relative to maze origin (unsigned; only used when inside maze)
   wire [9:0] pac_local_x = pac_x - IMG_X0;
@@ -200,33 +205,44 @@ module vga_core_640x480(
     .is_wall   (wall_at_target)
   );
 
-  // move once per N frames, blocked by walls
+  // Movement at ~75.7576 px/s using 125/99 pixels per frame
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
-      pac_x    <= IMG_X0 + (IMG_W/2);
-      pac_y    <= IMG_Y0 + (IMG_H/2);
-      pac_dir  <= 2'd0;   // right
-      move_div <= 8'd0;
+      // Pac-Man starting tile: (13, 26), facing left
+      pac_x    <= IMG_X0 + (14*8);     // = 316
+      pac_y    <= IMG_Y0 + (28*8) + 4;     // = 308
+      pac_dir  <= 2'd1;                    // left
+      speed_acc <= 8'd0;
     end else begin
       if (frame_tick) begin
-        move_div <= move_div + 8'd1;
+        // fractional step accumulator: speed = 125/99 px per frame
+        tmp_acc = speed_acc + 8'd125;
+        step_px = 2'd0;
 
-        if (move_div == 8'd0) begin
-          if (pac_in_maze && !wall_at_target) begin
-            case (pac_dir)
-              2'd0: pac_x <= pac_x + 1;  // right
-              2'd1: pac_x <= pac_x - 1;  // left
-              2'd2: pac_y <= pac_y - 1;  // up
-              2'd3: pac_y <= pac_y + 1;  // down
-            endcase
-          end
+        // subtract denominator (99) up to twice per frame
+        if (tmp_acc >= 8'd99) begin
+          tmp_acc = tmp_acc - 8'd99;
+          step_px = step_px + 2'd1;
+        end
+        if (tmp_acc >= 8'd99) begin
+          tmp_acc = tmp_acc - 8'd99;
+          step_px = step_px + 2'd1;
+        end
+
+        speed_acc <= tmp_acc;
+
+        // move step_px pixels this frame if path is clear
+        if (step_px != 2'd0 && pac_in_maze && !wall_at_target) begin
+          case (pac_dir)
+            2'd0: pac_x <= pac_x + step_px;  // right
+            2'd1: pac_x <= pac_x - step_px;  // left
+            2'd2: pac_y <= pac_y - step_px;  // up
+            2'd3: pac_y <= pac_y + step_px;  // down
+          endcase
         end
       end
 
-      // TODO: update pac_dir from buttons/switches here, e.g.:
-      // if (btn_left)  pac_dir <= 2'd1;
-      // if (btn_right) pac_dir <= 2'd0;
-      // etc.
+      // TODO: update pac_dir from buttons/switches here.
     end
   end
 
@@ -243,9 +259,8 @@ module vga_core_640x480(
 
   wire       in_pac_box = (spr_x_full < SPR_W) && (spr_y_full < SPR_H);
 
-  // use low 4 bits (0..15) for address
-  wire [3:0] spr_x = spr_x_full[3:0];
-  wire [3:0] spr_y = spr_y_full[3:0];
+  wire [3:0] spr_x = spr_x_full[3:0];  // 0..15
+  wire [3:0] spr_y = spr_y_full[3:0];  // 0..15
 
   wire [7:0] pac_addr = (spr_y << 4) | spr_x;  // y*16 + x
 
@@ -292,7 +307,7 @@ module vga_core_640x480(
               r <= 4'hF; g <= 4'hF; b <= 4'hF;      // white dots
             end
             4'h7: begin
-              r <= 4'hF; g <= 4'h0; b <= 4'h0;      // magenta/red accents
+              r <= 4'hF; g <= 4'h0; b <= 4'hF;      // magenta accents
             end
             default: begin
               r <= 4'h0; g <= 4'h0; b <= 4'h0;
