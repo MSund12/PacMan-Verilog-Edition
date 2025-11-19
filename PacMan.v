@@ -1,6 +1,8 @@
 module PacMan(
   input  wire CLOCK_50,
   input  wire KEY0,
+  input  wire [9:0] SW,        // NEW: onboard switches
+
   output wire [9:0] LEDR,
   output wire [6:0] HEX0, HEX1,
   output wire [3:0] VGA_R,
@@ -26,6 +28,13 @@ module PacMan(
   vga_core_640x480 UCORE(
     .pclk(pclk),
     .rst_n(rst_n & pll_locked),
+
+    // NEW: movement controls from switches
+    .move_up   (SW[3]),
+    .move_down (SW[2]),
+    .move_left (SW[1]),
+    .move_right(SW[0]),
+
     .h(h),
     .v(v),
     .hs(hs),
@@ -58,9 +67,17 @@ module PacMan(
 endmodule
 
 
+
 module vga_core_640x480(
   input  wire        pclk,
   input  wire        rst_n,
+
+  // NEW: movement controls
+  input  wire        move_up,
+  input  wire        move_down,
+  input  wire        move_left,
+  input  wire        move_right,
+
   output reg  [9:0]  h,
   output reg  [9:0]  v,
   output wire        hs,
@@ -69,6 +86,8 @@ module vga_core_640x480(
   output reg  [3:0]  g,
   output reg  [3:0]  b
 );
+
+
   // 640x480 @ 60 Hz timing
   localparam H_VIS=640, H_FP=16, H_SYNC=96, H_BP=48, H_TOT=800;
   localparam V_VIS=480, V_FP=10, V_SYNC=2,  V_BP=33, V_TOT=525;
@@ -157,9 +176,15 @@ module vga_core_640x480(
     .data(pix_data)
   );
 
-  // -------------------------
+    // -------------------------
   // Pac-Man position and tile-based collision
   // -------------------------
+  // Visual sprite is still 16x16, but collision hitbox is 14x15
+  localparam HIT_W  = 14;
+  localparam HIT_H  = 15;
+  localparam HIT_RX = HIT_W/2;  // 7 pixels (left/right)
+  localparam HIT_RY = HIT_H/2;  // 7 pixels (up/down)
+
   reg [9:0] pac_x, pac_y;     // center position (screen coords)
   reg [1:0] pac_dir;          // 0=right,1=left,2=up,3=down
 
@@ -177,27 +202,44 @@ module vga_core_640x480(
       (pac_x >= IMG_X0) && (pac_x < IMG_X0 + IMG_W) &&
       (pac_y >= IMG_Y0) && (pac_y < IMG_Y0 + IMG_H);
 
-  // current tile (8x8) from center point
-  wire [4:0] pac_tile_x = pac_local_x[9:3];  // 0..27
-  wire [5:0] pac_tile_y = pac_local_y[9:3];  // 0..35
-
-  // next tile in current direction
-  reg [4:0] target_tile_x;
-  reg [5:0] target_tile_y;
+  // Sample position at the FRONT of the 14x15 hitbox in current direction
+  reg [9:0] sample_x, sample_y;
   always @* begin
-    target_tile_x = pac_tile_x;
-    target_tile_y = pac_tile_y;
+    sample_x = pac_local_x;
+    sample_y = pac_local_y;
     case (pac_dir)
-      2'd0: if (pac_tile_x < TILES_X-1) target_tile_x = pac_tile_x + 1; // right
-      2'd1: if (pac_tile_x > 0)        target_tile_x = pac_tile_x - 1; // left
-      2'd2: if (pac_tile_y > 0)        target_tile_y = pac_tile_y - 1; // up
-      2'd3: if (pac_tile_y < TILES_Y-1) target_tile_y = pac_tile_y + 1; // down
+      2'd0: begin // right
+        sample_x = pac_local_x + HIT_RX;
+        if (sample_x > IMG_W-1)
+          sample_x = IMG_W-1;
+      end
+      2'd1: begin // left
+        if (pac_local_x > HIT_RX)
+          sample_x = pac_local_x - HIT_RX;
+        else
+          sample_x = 10'd0;
+      end
+      2'd2: begin // up
+        if (pac_local_y > HIT_RY)
+          sample_y = pac_local_y - HIT_RY;
+        else
+          sample_y = 10'd0;
+      end
+      2'd3: begin // down
+        sample_y = pac_local_y + HIT_RY;
+        if (sample_y > IMG_H-1)
+          sample_y = IMG_H-1;
+      end
     endcase
   end
 
+  // Tile under the sampled (front-of-hitbox) position
+  wire [4:0] pac_tile_x = sample_x[9:3];  // 0..27
+  wire [5:0] pac_tile_y = sample_y[9:3];  // 0..35
+
   // linear tile index = tile_y*28 + tile_x (28 = 32 - 4)
-  wire [9:0] idx_y             = (target_tile_y << 5) - (target_tile_y << 2);
-  wire [9:0] target_tile_index = idx_y + target_tile_x;
+  wire [9:0] idx_y             = (pac_tile_y << 5) - (pac_tile_y << 2);
+  wire [9:0] target_tile_index = idx_y + pac_tile_x;
 
   wire wall_at_target;
   level_rom ULEVEL (
@@ -209,9 +251,9 @@ module vga_core_640x480(
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       // Pac-Man starting tile: (13, 26), facing left
-      pac_x    <= IMG_X0 + (14*8);     // = 316
-      pac_y    <= IMG_Y0 + (28*8) + 4;     // = 308
-      pac_dir  <= 2'd1;                    // left
+      pac_x     <= IMG_X0 + (14*8);        // = 316
+      pac_y     <= IMG_Y0 + (28*8) + 4;    // = 308
+      pac_dir   <= 2'd1;                   // left
       speed_acc <= 8'd0;
     end else begin
       if (frame_tick) begin
@@ -242,7 +284,14 @@ module vga_core_640x480(
         end
       end
 
-      // TODO: update pac_dir from buttons/switches here.
+      if (move_up)
+        pac_dir <= 2'd2;   // up
+      else if (move_down)
+        pac_dir <= 2'd3;   // down
+      else if (move_left)
+        pac_dir <= 2'd1;   // left
+      else if (move_right)
+        pac_dir <= 2'd0;   // right
     end
   end
 
