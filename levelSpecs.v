@@ -1,4 +1,5 @@
 //Based on what level player is on, set the power ups, movespeeds for the level
+// NOTE: This module is currently unused but included for future level-based speed/parameter functionality
 module level_params(
     input  wire [4:0] level,   // 1–21+
     

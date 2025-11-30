@@ -10,7 +10,8 @@ module keyboard_decoder(
     output reg         move_up,
     output reg         move_down,
     output reg         move_left,
-    output reg         move_right
+    output reg         move_right,
+    output reg         start_game
 );
 
     // Decode ASCII characters
@@ -18,6 +19,7 @@ module keyboard_decoder(
     // 'S' = 0x53, 's' = 0x73 (down)
     // 'A' = 0x41, 'a' = 0x61 (left)
     // 'D' = 0x44, 'd' = 0x64 (right)
+    // Enter = 0x0D ('\r') or 0x0A ('\n')
     
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -25,12 +27,14 @@ module keyboard_decoder(
             move_down <= 1'b0;
             move_left <= 1'b0;
             move_right <= 1'b0;
+            start_game <= 1'b0;
         end else begin
             // Reset all signals first
             move_up <= 1'b0;
             move_down <= 1'b0;
             move_left <= 1'b0;
             move_right <= 1'b0;
+            start_game <= 1'b0;
             
             // Decode on valid UART data
             if (uart_valid) begin
@@ -39,6 +43,7 @@ module keyboard_decoder(
                     8'h53, 8'h73: move_down <= 1'b1;  // 'S' or 's'
                     8'h41, 8'h61: move_left <= 1'b1;  // 'A' or 'a'
                     8'h44, 8'h64: move_right <= 1'b1; // 'D' or 'd'
+                    8'h0D, 8'h0A: start_game <= 1'b1;  // Enter ('\r' or '\n')
                     default: ; // No movement for other keys
                 endcase
             end

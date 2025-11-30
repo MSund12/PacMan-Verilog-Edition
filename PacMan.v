@@ -34,7 +34,7 @@ module PacMan(
   );
 
   // Keyboard decoder
-  wire move_up_uart, move_down_uart, move_left_uart, move_right_uart;
+  wire move_up_uart, move_down_uart, move_left_uart, move_right_uart, start_game_uart;
   keyboard_decoder U_KEY_DECODER (
     .clk(CLOCK_50),
     .rst_n(rst_n),
@@ -43,14 +43,87 @@ module PacMan(
     .move_up(move_up_uart),
     .move_down(move_down_uart),
     .move_left(move_left_uart),
-    .move_right(move_right_uart)
+    .move_right(move_right_uart),
+    .start_game(start_game_uart)
   );
 
+  // Convert pulse-based UART signals to level-based signals (CLOCK_50 domain)
+  reg move_up_uart_level, move_down_uart_level, move_left_uart_level, move_right_uart_level;
+  always @(posedge CLOCK_50 or negedge rst_n) begin
+    if (!rst_n) begin
+      move_up_uart_level <= 1'b0;
+      move_down_uart_level <= 1'b0;
+      move_left_uart_level <= 1'b0;
+      move_right_uart_level <= 1'b0;
+    end else begin
+      // Set on pulse, clear when switch is released (if using switches)
+      if (move_up_uart) move_up_uart_level <= 1'b1;
+      else if (!SW[3]) move_up_uart_level <= 1'b0;
+      
+      if (move_down_uart) move_down_uart_level <= 1'b1;
+      else if (!SW[2]) move_down_uart_level <= 1'b0;
+      
+      if (move_left_uart) move_left_uart_level <= 1'b1;
+      else if (!SW[1]) move_left_uart_level <= 1'b0;
+      
+      if (move_right_uart) move_right_uart_level <= 1'b1;
+      else if (!SW[0]) move_right_uart_level <= 1'b0;
+    end
+  end
+
   // Combine UART and switch inputs (UART takes priority, but switches still work)
-  wire move_up_combined = move_up_uart | SW[3];
-  wire move_down_combined = move_down_uart | SW[2];
-  wire move_left_combined = move_left_uart | SW[1];
-  wire move_right_combined = move_right_uart | SW[0];
+  wire move_up_50mhz = move_up_uart_level | SW[3];
+  wire move_down_50mhz = move_down_uart_level | SW[2];
+  wire move_left_50mhz = move_left_uart_level | SW[1];
+  wire move_right_50mhz = move_right_uart_level | SW[0];
+
+  // Convert start_game pulse to level-based signal (CLOCK_50 domain)
+  reg start_game_uart_level;
+  always @(posedge CLOCK_50 or negedge rst_n) begin
+    if (!rst_n) begin
+      start_game_uart_level <= 1'b0;
+    end else begin
+      // Set on pulse, stays set once Enter is pressed
+      if (start_game_uart) start_game_uart_level <= 1'b1;
+    end
+  end
+
+  // Clock domain crossing: synchronize movement signals from CLOCK_50 to pclk
+  // Using 2-stage synchronizer for safe crossing
+  wire rst_n_pll_sync = rst_n & pll_locked;
+  reg [3:0] move_sync_stage1, move_sync_stage2;
+  wire move_up_sync, move_down_sync, move_left_sync, move_right_sync;
+  
+  always @(posedge pclk or negedge rst_n_pll_sync) begin
+    if (!rst_n_pll_sync) begin
+      move_sync_stage1 <= 4'b0000;
+      move_sync_stage2 <= 4'b0000;
+    end else begin
+      move_sync_stage1 <= {move_up_50mhz, move_down_50mhz, move_left_50mhz, move_right_50mhz};
+      move_sync_stage2 <= move_sync_stage1;
+    end
+  end
+  
+  assign move_up_sync = move_sync_stage2[3];
+  assign move_down_sync = move_sync_stage2[2];
+  assign move_left_sync = move_sync_stage2[1];
+  assign move_right_sync = move_sync_stage2[0];
+
+  // Synchronize start_game signal from CLOCK_50 to pclk domain
+  reg start_game_sync_stage1, start_game_sync_stage2;
+  wire start_game_sync;
+  
+  always @(posedge pclk or negedge rst_n_pll_sync) begin
+    if (!rst_n_pll_sync) begin
+      start_game_sync_stage1 <= 1'b0;
+      start_game_sync_stage2 <= 1'b0;
+    end else begin
+      start_game_sync_stage1 <= start_game_uart_level;
+      start_game_sync_stage2 <= start_game_sync_stage1;
+    end
+  end
+  
+  assign start_game_sync = start_game_sync_stage2;
 
   wire [9:0] h;
   wire [9:0] v;
@@ -61,11 +134,12 @@ module PacMan(
     .pclk(pclk),
     .rst_n(rst_n & pll_locked),
 
-    // Movement controls from UART or switches
-    .move_up   (move_up_combined),
-    .move_down (move_down_combined),
-    .move_left (move_left_combined),
-    .move_right(move_right_combined),
+    // Movement controls from UART or switches (synchronized to pclk domain)
+    .move_up   (move_up_sync),
+    .move_down (move_down_sync),
+    .move_left (move_left_sync),
+    .move_right(move_right_sync),
+    .start_game(start_game_sync),
 
     .h(h),
     .v(v),
@@ -109,6 +183,7 @@ module vga_core_640x480(
   input  wire        move_down,
   input  wire        move_left,
   input  wire        move_right,
+  input  wire        start_game,
 
   output reg  [9:0]  h,
   output reg  [9:0]  v,
@@ -207,6 +282,31 @@ module vga_core_640x480(
     .addr(img_addr),
     .data(pix_data)
   );
+  
+  // Tile coordinates for current pixel (for dot checking during rendering)
+  wire [8:0] img_x_addr_d = h_d - IMG_X0;  // 0..223
+  wire [8:0] img_y_addr_d = v_d - IMG_Y0;  // 0..287
+  wire [4:0] render_tile_x = img_x_addr_d[9:3];  // 0..27
+  wire [5:0] render_tile_y = img_y_addr_d[9:3];  // 0..35
+  wire [9:0] render_tile_index = ((render_tile_y << 5) - (render_tile_y << 2)) + render_tile_x;
+  
+  // Check if tile has a wall (for dot rendering)
+  wire render_tile_wall;
+  level_rom ULEVEL_RENDER (
+    .tile_index(render_tile_index),
+    .is_wall(render_tile_wall)
+  );
+  
+  // Dot map provides render_has_dot output for rendering
+  wire render_tile_has_dot;
+  
+  // Power pellet rendering wires (will reference pellets_collected declared later)
+  // Using literal values matching PELLET_TILE constants
+  wire is_render_pellet_1 = (render_tile_x == 5'd1) && (render_tile_y == 6'd6);
+  wire is_render_pellet_2 = (render_tile_x == 5'd26) && (render_tile_y == 6'd6);
+  wire is_render_pellet_3 = (render_tile_x == 5'd1) && (render_tile_y == 6'd26);
+  wire is_render_pellet_4 = (render_tile_x == 5'd26) && (render_tile_y == 6'd26);
+  wire is_render_pellet_tile = is_render_pellet_1 || is_render_pellet_2 || is_render_pellet_3 || is_render_pellet_4;
 
     // -------------------------
   // Pac-Man position and tile-based collision
@@ -230,6 +330,93 @@ module vga_core_640x480(
   // (≈ 75.7576 px/s at 60 Hz)
   reg [7:0] speed_acc;        // remainder modulo 99
 
+  // -------------------------
+  // Game State Management
+  // -------------------------
+  // Game states
+  localparam [2:0] STATE_ATTRACT = 3'd0;
+  localparam [2:0] STATE_READY = 3'd1;
+  localparam [2:0] STATE_PLAYING = 3'd2;
+  localparam [2:0] STATE_DYING = 3'd3;
+  localparam [2:0] STATE_GAME_OVER = 3'd4;
+  localparam [2:0] STATE_LEVEL_COMPLETE = 3'd5;
+  
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      game_state <= STATE_ATTRACT;
+      current_level <= 5'd1;
+      dying_timer <= 16'd0;
+    end else begin
+      case (game_state)
+        STATE_ATTRACT: begin
+          // Wait for start button
+          if (start_game) begin
+            game_state <= STATE_READY;
+          end
+        end
+        
+        STATE_READY: begin
+          // Brief ready state, then start playing
+          game_state <= STATE_PLAYING;
+        end
+        
+        STATE_PLAYING: begin
+          // Check for level completion
+          if (level_complete) begin
+            game_state <= STATE_LEVEL_COMPLETE;
+          end
+          // Check for life loss
+          if (lose_life) begin
+            game_state <= STATE_DYING;
+            dying_timer <= 16'd0;
+          end
+          // Check for game over
+          if (game_over) begin
+            game_state <= STATE_GAME_OVER;
+          end
+        end
+        
+        STATE_DYING: begin
+          // Dying animation (60 frames = 1 second at 60 FPS)
+          if (dying_timer < 16'd60) begin
+            dying_timer <= dying_timer + 16'd1;
+          end else begin
+            // Check if game over
+            if (game_over) begin
+              game_state <= STATE_GAME_OVER;
+            end else begin
+              // Reset positions and continue
+              game_state <= STATE_READY;
+              dying_timer <= 16'd0;
+            end
+          end
+        end
+        
+        STATE_LEVEL_COMPLETE: begin
+          // Level complete - advance to next level
+          current_level <= current_level + 5'd1;
+          game_state <= STATE_READY;
+          // Reset will be handled by level_reset signal
+        end
+        
+        STATE_GAME_OVER: begin
+          // Wait for restart (start_game resets everything)
+          if (start_game) begin
+            game_state <= STATE_ATTRACT;
+            current_level <= 5'd1;
+          end
+        end
+        
+        default: begin
+          game_state <= STATE_ATTRACT;
+        end
+      endcase
+    end
+  end
+  
+  // Update game_started flag based on state (for compatibility with existing code)
+  assign game_started = (game_state == STATE_PLAYING);
+
   // center relative to maze origin (unsigned; only used when inside maze)
   wire [9:0] pac_local_x = pac_x - IMG_X0;
   wire [9:0] pac_local_y = pac_y - IMG_Y0;
@@ -239,7 +426,9 @@ module vga_core_640x480(
       (pac_y >= IMG_Y0) && (pac_y < IMG_Y0 + IMG_H);
 
   // Calculate step_px for this frame (combinational, based on current speed_acc)
-  wire [7:0] tmp_acc_calc = speed_acc + 8'd125;
+  // Scale increment by pacman_speed percentage: scaled_increment = (125 * pacman_speed) / 100
+  wire [15:0] scaled_increment = (125 * pacman_speed) / 100;  // 125 * percentage / 100
+  wire [7:0] tmp_acc_calc = speed_acc + scaled_increment[7:0];  // Use lower 8 bits (scaled_increment should fit)
   wire [1:0] step_px_calc;
   wire [7:0] tmp_acc_after_first;
   wire [7:0] tmp_acc_after_second;
@@ -262,17 +451,16 @@ module vga_core_640x480(
   // Check collision at the front edge of the hitbox AFTER movement
   // This prevents Pac-Man from entering walls
   wire [9:0] check_x, check_y;
+  // For left movement: check left edge, clamp to 0 if center is too close to left edge
+  wire [9:0] left_edge_x = (next_pac_local_x >= HIT_RX) ? (next_pac_local_x - HIT_RX) : 10'd0;
   assign check_x = (pac_dir == 2'd0) ? (next_pac_local_x + HIT_RX) :  // right: check right edge
-                    (pac_dir == 2'd1) ? ((next_pac_local_x >= HIT_RX) ? (next_pac_local_x - HIT_RX) : 10'd0) :  // left: check left edge
-                    next_pac_local_x;  // up/down: use center x
-  assign check_y =
-      (pac_dir == 2'd2) ?                       // moving up
-          ((next_pac_local_y >= HIT_RY_UP) ?
-              (next_pac_local_y - HIT_RY_UP) :
-              10'd0)
-    : (pac_dir == 2'd3) ?                       // moving down
-          (next_pac_local_y + HIT_RY_DOWN)
-    : next_pac_local_y;                         // left/right
+                    (pac_dir == 2'd1) ? left_edge_x :                  // left: check left edge (clamped)
+                    next_pac_local_x;                                   // up/down: use center x
+  // For up movement: check top edge, clamp to 0 if center is too close to top edge
+  wire [9:0] top_edge_y = (next_pac_local_y >= HIT_RY_UP) ? (next_pac_local_y - HIT_RY_UP) : 10'd0;
+  assign check_y = (pac_dir == 2'd2) ? top_edge_y :                    // up: check top edge (clamped)
+                    (pac_dir == 2'd3) ? (next_pac_local_y + HIT_RY_DOWN) :  // down: check bottom edge
+                    next_pac_local_y;                                  // left/right: use center y
 
 
   // Clamp to valid image bounds
@@ -293,6 +481,252 @@ module vga_core_640x480(
     .is_wall   (wall_at_target)
   );
 
+  // -------------------------
+  // Dot Collection System
+  // -------------------------
+  // Pac-Man's current tile (center position)
+  wire [4:0] pac_center_tile_x = pac_local_x[9:3];  // 0..27
+  wire [5:0] pac_center_tile_y = pac_local_y[9:3];  // 0..35
+  wire [9:0] pac_center_tile_index = ((pac_center_tile_y << 5) - (pac_center_tile_y << 2)) + pac_center_tile_x;
+  
+  wire pac_center_wall;
+  level_rom ULEVEL_PAC_CENTER (
+    .tile_index(pac_center_tile_index),
+    .is_wall(pac_center_wall)
+  );
+  
+  // Dot map: tracks which tiles have dots
+  wire dot_has_dot;
+  wire [7:0] dots_remaining;
+  reg level_reset;
+  reg dot_collected;
+  
+  dot_map UDOT_MAP (
+    .clk(pclk),
+    .rst_n(rst_n),
+    .level_reset(level_reset),
+    .tile_x(pac_center_tile_x),
+    .tile_y(pac_center_tile_y),
+    .clear_dot(dot_collected),
+    .is_wall_tile(pac_center_wall),
+    .has_dot(dot_has_dot),
+    .render_tile_x(render_tile_x),
+    .render_tile_y(render_tile_y),
+    .render_is_wall(render_tile_wall),
+    .render_has_dot(render_tile_has_dot),
+    .dots_remaining(dots_remaining)
+  );
+  
+  // -------------------------
+  // Power Pellets (Energizers)
+  // -------------------------
+  // Power pellet locations: (1,6), (26,6), (1,26), (26,26)
+  localparam [4:0] PELLET_TILE_X_1 = 5'd1;
+  localparam [4:0] PELLET_TILE_X_2 = 5'd26;
+  localparam [5:0] PELLET_TILE_Y_1 = 6'd6;
+  localparam [5:0] PELLET_TILE_Y_2 = 6'd26;
+  
+  // Track which power pellets have been collected (4 pellets)
+  reg [3:0] pellets_collected;  // One bit per pellet
+  
+  // Check if current tile is a power pellet location
+  wire is_pellet_tile_1 = (pac_center_tile_x == PELLET_TILE_X_1) && (pac_center_tile_y == PELLET_TILE_Y_1);
+  wire is_pellet_tile_2 = (pac_center_tile_x == PELLET_TILE_X_2) && (pac_center_tile_y == PELLET_TILE_Y_1);
+  wire is_pellet_tile_3 = (pac_center_tile_x == PELLET_TILE_X_1) && (pac_center_tile_y == PELLET_TILE_Y_2);
+  wire is_pellet_tile_4 = (pac_center_tile_x == PELLET_TILE_X_2) && (pac_center_tile_y == PELLET_TILE_Y_2);
+  wire is_pellet_tile = is_pellet_tile_1 || is_pellet_tile_2 || is_pellet_tile_3 || is_pellet_tile_4;
+  
+  // Check which specific pellet (for collection tracking)
+  wire pellet_1_active = is_pellet_tile_1 && !pellets_collected[0];
+  wire pellet_2_active = is_pellet_tile_2 && !pellets_collected[1];
+  wire pellet_3_active = is_pellet_tile_3 && !pellets_collected[2];
+  wire pellet_4_active = is_pellet_tile_4 && !pellets_collected[3];
+  wire pellet_active = pellet_1_active || pellet_2_active || pellet_3_active || pellet_4_active;
+  
+  // Power pellet collection detection
+  reg pellet_collected;
+  reg pellet_collected_prev;
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      pellets_collected <= 4'b0000;
+      pellet_collected <= 1'b0;
+      pellet_collected_prev <= 1'b0;
+    end else begin
+      pellet_collected_prev <= pellet_active && game_started && pac_in_maze && !pac_center_wall;
+      
+      // Generate one-cycle pulse when entering a pellet tile
+      if (pellet_active && !pellet_collected_prev && game_started && pac_in_maze && !pac_center_wall) begin
+        pellet_collected <= 1'b1;
+        // Mark which pellet was collected
+        if (is_pellet_tile_1) pellets_collected[0] <= 1'b1;
+        if (is_pellet_tile_2) pellets_collected[1] <= 1'b1;
+        if (is_pellet_tile_3) pellets_collected[2] <= 1'b1;
+        if (is_pellet_tile_4) pellets_collected[3] <= 1'b1;
+      end else begin
+        pellet_collected <= 1'b0;
+      end
+      
+      // Reset pellets on level reset
+      if (level_reset) begin
+        pellets_collected <= 4'b0000;
+      end
+    end
+  end
+  
+  // Fright mode will be triggered by pellet_collected (to be implemented in Phase 2.3)
+  
+  // Power pellet rendering: check if pellet is collected (declared after pellets_collected)
+  wire render_pellet_collected = (is_render_pellet_1 && pellets_collected[0]) ||
+                                 (is_render_pellet_2 && pellets_collected[1]) ||
+                                 (is_render_pellet_3 && pellets_collected[2]) ||
+                                 (is_render_pellet_4 && pellets_collected[3]);
+  
+  // -------------------------
+  // Scoring System
+  // -------------------------
+  wire [15:0] score;
+  wire [2:0] lives;
+  wire [15:0] high_score;
+  wire game_over;
+  // -------------------------
+  // Ghost Collision Detection
+  // -------------------------
+  // Check collision between Pac-Man and Blinky (tile-based)
+  // Collision occurs when Pac-Man and ghost are in the same tile
+  wire blinky_collision = (pac_center_tile_x == blinky_tile_x) && 
+                          (pac_center_tile_y == blinky_tile_y) &&
+                          game_started && pac_in_maze;
+  
+  // Fright mode status (to be implemented in Phase 2.3)
+  wire is_fright_mode = 1'b0;  // Will be set when power pellet is active
+  
+  // Collision handling
+  reg lose_life_reg;
+  reg ghost_eaten_reg;
+  reg [1:0] ghost_eaten_count_reg;
+  
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      lose_life_reg <= 1'b0;
+      ghost_eaten_reg <= 1'b0;
+      ghost_eaten_count_reg <= 2'd0;
+    end else begin
+      lose_life_reg <= 1'b0;
+      ghost_eaten_reg <= 1'b0;
+      
+      if (blinky_collision) begin
+        if (is_fright_mode) begin
+          // Ghost eaten in fright mode
+          ghost_eaten_reg <= 1'b1;
+          ghost_eaten_count_reg <= 2'd0;  // Blinky is ghost 0
+          // TODO: Send Blinky back to house (Phase 2.4)
+        end else begin
+          // Pac-Man caught - lose life
+          lose_life_reg <= 1'b1;
+        end
+      end
+    end
+  end
+  
+  wire lose_life = lose_life_reg;
+  wire level_complete = (dots_remaining == 8'd0);  // All dots collected
+  wire ghost_eaten = ghost_eaten_reg;
+  wire [1:0] ghost_eaten_count = ghost_eaten_count_reg;
+  
+  score_manager USCORE (
+    .clk(pclk),
+    .rst_n(rst_n),
+    .game_started(game_started),
+    .dot_collected(dot_collected),
+    .pellet_collected(pellet_collected),
+    .ghost_eaten(ghost_eaten),
+    .ghost_eaten_count(ghost_eaten_count),
+    .lose_life(lose_life),
+    .level_complete(level_complete),
+    .score(score),
+    .lives(lives),
+    .high_score(high_score),
+    .game_over(game_over)
+  );
+  
+  // Detect dot collection: when Pac-Man's center enters a tile with a dot
+  reg dot_has_dot_prev;
+  reg [4:0] last_collected_tile_x;
+  reg [5:0] last_collected_tile_y;
+  reg [9:0] level_reset_counter;
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      dot_collected <= 1'b0;
+      dot_has_dot_prev <= 1'b0;
+      last_collected_tile_x <= 5'd0;
+      last_collected_tile_y <= 6'd0;
+      level_reset <= 1'b0;
+      level_reset_counter <= 10'd0;
+    end else begin
+      dot_has_dot_prev <= dot_has_dot;
+      
+      // Generate one-cycle pulse when entering a tile with a dot
+      // Also check that we haven't already collected from this tile
+      wire new_tile = (pac_center_tile_x != last_collected_tile_x) || (pac_center_tile_y != last_collected_tile_y);
+      wire entering_dot_tile = dot_has_dot && !dot_has_dot_prev && game_started && pac_in_maze && !pac_center_wall;
+      
+      if (entering_dot_tile && new_tile) begin
+        dot_collected <= 1'b1;
+        last_collected_tile_x <= pac_center_tile_x;
+        last_collected_tile_y <= pac_center_tile_y;
+      end else begin
+        dot_collected <= 1'b0;
+      end
+      
+      // Level reset: trigger when game starts or level advances
+      // Hold reset for enough cycles to complete dot map reset (1008 cycles)
+      if (start_game && !game_started) begin
+        level_reset <= 1'b1;
+        level_reset_counter <= 10'd0;
+        last_collected_tile_x <= 5'd0;
+        last_collected_tile_y <= 6'd0;
+      end else if (level_reset && level_reset_counter < 10'd1100) begin
+        // Keep reset active for enough cycles
+        level_reset_counter <= level_reset_counter + 10'd1;
+      end else begin
+        level_reset <= 1'b0;
+        level_reset_counter <= 10'd0;
+      end
+    end
+  end
+
+  // Level-based speed parameters
+  wire [7:0] pacman_speed, ghost_speed;
+  level_params ULEVEL_PARAMS (
+    .level(current_level),
+    .pacman_speed(pacman_speed),
+    .pacman_dots_speed(),  // unused for now
+    .ghost_speed(ghost_speed),
+    .ghost_tunnel_speed(),  // unused for now
+    .elroy1_speed(),  // unused for now
+    .elroy2_speed(),  // unused for now
+    .elroy1_dots_left(),  // unused for now
+    .elroy2_dots_left(),  // unused for now
+    .fright_pacman_speed(),  // unused for now
+    .fright_pacman_dots_speed(),  // unused for now
+    .fright_ghost_speed(),  // unused for now
+    .fright_time(),  // unused for now
+    .fright_flashes()  // unused for now
+  );
+
+  // Game start state: set when Enter is pressed
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      game_started <= 1'b0;
+      current_level <= 5'd1;  // Start at level 1
+    end else begin
+      if (start_game) begin
+        game_started <= 1'b1;
+      end
+      // Level advancement logic can be added here later
+    end
+  end
+
   // Movement at ~75.7576 px/s using 125/99 pixels per frame
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
@@ -303,7 +737,7 @@ module vga_core_640x480(
       pac_dir   <= 2'd1;                   // left
       speed_acc <= 8'd0;
     end else begin
-      if (frame_tick) begin
+      if (frame_tick && game_started) begin
         // Use the pre-calculated step_px_wire for movement
         speed_acc <= tmp_acc_after_second;
 
@@ -317,7 +751,7 @@ module vga_core_640x480(
           endcase
         end
         
-        // Direction changes synchronized to frame_tick
+        // Direction changes synchronized to frame_tick (only when game started)
         if (move_up)
           pac_dir <= 2'd2;   // up
         else if (move_down)
@@ -351,17 +785,27 @@ module vga_core_640x480(
   wire blinky_wall_up_rom, blinky_wall_down_rom, blinky_wall_left_rom, blinky_wall_right_rom;
   
   // Check walls in adjacent tiles (or treat boundaries as walls)
-  // Use 1008 as sentinel value for invalid/boundary tiles (valid range is 0-1007)
+  // Calculate adjacent tile indices
   wire [9:0] blinky_tile_idx_up    = (blinky_tile_y > 0) ? (blinky_tile_idx - 10'd28) : 10'd1008;
   wire [9:0] blinky_tile_idx_down  = (blinky_tile_y < 35) ? (blinky_tile_idx + 10'd28) : 10'd1008;
   wire [9:0] blinky_tile_idx_left  = (blinky_tile_x > 0) ? (blinky_tile_idx - 10'd1) : 10'd1008;
   wire [9:0] blinky_tile_idx_right = (blinky_tile_x < 27) ? (blinky_tile_idx + 10'd1) : 10'd1008;
 
-  // Bounds checking: ensure tile indices are valid before ROM access
-  wire [9:0] blinky_tile_idx_up_safe    = (blinky_tile_idx_up < 10'd1008) ? blinky_tile_idx_up : 10'd0;
-  wire [9:0] blinky_tile_idx_down_safe  = (blinky_tile_idx_down < 10'd1008) ? blinky_tile_idx_down : 10'd0;
-  wire [9:0] blinky_tile_idx_left_safe  = (blinky_tile_idx_left < 10'd1008) ? blinky_tile_idx_left : 10'd0;
-  wire [9:0] blinky_tile_idx_right_safe = (blinky_tile_idx_right < 10'd1008) ? blinky_tile_idx_right : 10'd0;
+  // Check if each direction is at boundary (use 1008 as sentinel for invalid tiles)
+  wire blinky_at_boundary_up    = (blinky_tile_y == 0);
+  wire blinky_at_boundary_down  = (blinky_tile_y == 35);
+  wire blinky_at_boundary_left  = (blinky_tile_x == 0);
+  wire blinky_at_boundary_right = (blinky_tile_x == 27);
+
+  // Only access ROM for valid (non-boundary) tiles
+  // Use valid tile index when not at boundary, otherwise use 0 (will be overridden anyway)
+  wire [9:0] blinky_tile_idx_up_safe    = blinky_at_boundary_up    ? 10'd0 : blinky_tile_idx_up;
+  wire [9:0] blinky_tile_idx_down_safe  = blinky_at_boundary_down  ? 10'd0 : blinky_tile_idx_down;
+  wire [9:0] blinky_tile_idx_left_safe  = blinky_at_boundary_left  ? 10'd0 : blinky_tile_idx_left;
+  wire [9:0] blinky_tile_idx_right_safe = blinky_at_boundary_right ? 10'd0 : blinky_tile_idx_right;
+  
+  // Note: ROM access with index 0 when at boundary is harmless since boundary check overrides it
+  // This avoids needing conditional ROM instantiation which would complicate the design
 
   level_rom ULEVEL_BLINKY_UP (
     .tile_index(blinky_tile_idx_up_safe),
@@ -383,16 +827,17 @@ module vga_core_640x480(
     .is_wall(blinky_wall_right_rom)
   );
 
-  // Treat boundaries as walls
-  assign blinky_wall_up    = (blinky_tile_y == 0) ? 1'b1 : blinky_wall_up_rom;
-  assign blinky_wall_down  = (blinky_tile_y == 35) ? 1'b1 : blinky_wall_down_rom;
-  assign blinky_wall_left  = (blinky_tile_x == 0) ? 1'b1 : blinky_wall_left_rom;
-  assign blinky_wall_right = (blinky_tile_x == 27) ? 1'b1 : blinky_wall_right_rom;
+  // Treat boundaries as walls (boundaries override ROM output)
+  assign blinky_wall_up    = blinky_at_boundary_up    ? 1'b1 : blinky_wall_up_rom;
+  assign blinky_wall_down  = blinky_at_boundary_down  ? 1'b1 : blinky_wall_down_rom;
+  assign blinky_wall_left  = blinky_at_boundary_left  ? 1'b1 : blinky_wall_left_rom;
+  assign blinky_wall_right = blinky_at_boundary_right ? 1'b1 : blinky_wall_right_rom;
 
   // Chase/scatter mode control (default to chase mode)
   reg isChase, isScatter;
-  always @(posedge pclk or negedge rst_n) begin
-    if (!rst_n) begin
+  wire rst_n_pll = rst_n & pll_locked;
+  always @(posedge pclk or negedge rst_n_pll) begin
+    if (!rst_n_pll) begin
       isChase <= 1'b1;
       isScatter <= 1'b0;
     end else begin
@@ -402,11 +847,14 @@ module vga_core_640x480(
     end
   end
 
+  // Gate frame_tick for Blinky: only move when game has started
+  wire blinky_frame_tick = frame_tick && game_started;
+
   // Instantiate blinky module
   blinky UBLINKY (
     .clk(pclk),
-    .reset(rst_n & pll_locked),  // active-low reset, wait for PLL lock
-    .frame_tick(frame_tick),  // Synchronize movement to frame timing
+    .rst_n(rst_n & pll_locked),  // active-low reset, wait for PLL lock
+    .frame_tick(blinky_frame_tick),  // Synchronize movement to frame timing (gated)
     .pacmanX(pacman_tile_x),
     .pacmanY(pacman_tile_y),
     .isChase(isChase),
@@ -415,6 +863,7 @@ module vga_core_640x480(
     .wallDown(blinky_wall_down),
     .wallLeft(blinky_wall_left),
     .wallRight(blinky_wall_right),
+    .ghost_speed(ghost_speed),  // Level-based ghost speed percentage
     .blinkyX(blinky_tile_x),
     .blinkyY(blinky_tile_y)
   );
@@ -437,7 +886,19 @@ module vga_core_640x480(
   wire [3:0] spr_x = spr_x_full[3:0];  // 0..15
   wire [3:0] spr_y = spr_y_full[3:0];  // 0..15
 
-  wire [7:0] pac_addr = (spr_y << 4) | spr_x;  // y*16 + x
+  // Rotate/flip sprite based on direction
+  // Right (0): normal, Left (1): horizontal flip, Up (2): 90° CCW, Down (3): 90° CW
+  wire [3:0] spr_x_rotated, spr_y_rotated;
+  assign spr_x_rotated = (pac_dir == 2'd0) ? spr_x :                    // right: normal
+                         (pac_dir == 2'd1) ? (4'd15 - spr_x) :          // left: flip H
+                         (pac_dir == 2'd2) ? spr_y :                    // up: rotate CCW
+                         (4'd15 - spr_y);                               // down: rotate CW
+  assign spr_y_rotated = (pac_dir == 2'd0) ? spr_y :                    // right: normal
+                         (pac_dir == 2'd1) ? spr_y :                    // left: flip H
+                         (pac_dir == 2'd2) ? (4'd15 - spr_x) :          // up: rotate CCW
+                         spr_x;                                         // down: rotate CW
+
+  wire [7:0] pac_addr = (spr_y_rotated << 4) | spr_x_rotated;  // y*16 + x (rotated)
 
   wire [3:0] pac_pix_data;
   pacman_rom_16x16_4bpp UPAC (
@@ -539,7 +1000,16 @@ module vga_core_640x480(
               r <= 4'h0; g <= 4'h0; b <= 4'hF;      // blue walls
             end
             4'hF: begin
-              r <= 4'hF; g <= 4'hF; b <= 4'hF;      // white dots
+              // White dots/power pellets: check if this is a pellet location
+              if (is_render_pellet_tile && !render_pellet_collected && !render_tile_wall) begin
+                // Power pellet: larger white circle (render as 2x2 dot for now)
+                // TODO: Use dedicated power pellet sprite
+                r <= 4'hF; g <= 4'hF; b <= 4'hF;   // white power pellet
+              end else if (render_tile_has_dot && !render_tile_wall && !is_render_pellet_tile) begin
+                r <= 4'hF; g <= 4'hF; b <= 4'hF;   // white dot
+              end else begin
+                r <= 4'h0; g <= 4'h0; b <= 4'h0;   // background (dot/pellet collected)
+              end
             end
             4'h7: begin
               r <= 4'hF; g <= 4'h0; b <= 4'hF;      // magenta accents
@@ -565,14 +1035,19 @@ module image_rom_224x288_4bpp (
     input  wire [15:0] addr,   // 0 .. 64511
     output reg  [3:0]  data
 );
-    reg [3:0] mem [0:64512-1];
+    localparam DEPTH = 64512;
+    reg [3:0] mem [0:DEPTH-1];
 
     initial begin
         $readmemh("WithoutDots.hex", mem);
     end
 
     always @(posedge clk) begin
-        data <= mem[addr];
+        // Bounds checking: clamp address to valid range
+        if (addr < DEPTH)
+            data <= mem[addr];
+        else
+            data <= 4'h0;  // Return transparent/background if out of bounds
     end
 endmodule
 
@@ -583,14 +1058,20 @@ module pacman_rom_16x16_4bpp (
     input  wire [7:0] addr,   // 0 .. 255
     output reg  [3:0] data
 );
-    reg [3:0] mem [0:256-1];
+    localparam DEPTH = 256;
+    reg [3:0] mem [0:DEPTH-1];
 
     initial begin
         $readmemh("Pacman.hex", mem);
     end
 
     always @(posedge clk) begin
-        data <= mem[addr];
+        // Bounds checking: addr is 8-bit, so automatically in range 0-255
+        // But check anyway for safety
+        if (addr < DEPTH)
+            data <= mem[addr];
+        else
+            data <= 4'h0;  // Return transparent if out of bounds
     end
 endmodule
 
@@ -601,14 +1082,20 @@ module blinky_rom_16x16_4bpp (
     input  wire [7:0] addr,   // 0 .. 255
     output reg  [3:0] data
 );
-    reg [3:0] mem [0:256-1];
+    localparam DEPTH = 256;
+    reg [3:0] mem [0:DEPTH-1];
 
     initial begin
         $readmemh("Blinky.hex", mem);
     end
 
     always @(posedge clk) begin
-        data <= mem[addr];
+        // Bounds checking: addr is 8-bit, so automatically in range 0-255
+        // But check anyway for safety
+        if (addr < DEPTH)
+            data <= mem[addr];
+        else
+            data <= 4'h0;  // Return transparent if out of bounds
     end
 endmodule
 
