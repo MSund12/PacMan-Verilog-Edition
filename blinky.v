@@ -1,6 +1,7 @@
 module blinky(
     input  wire        clk,
     input  wire        reset,
+    input  wire        frame_tick,  // Move once per frame
 
     input  wire [5:0]  pacmanX,   // pacman tile X (0..27)
     input  wire [5:0]  pacmanY,   // pacman tile Y (0..35)
@@ -61,26 +62,28 @@ end
 // -------------------------------------------------------
 // Tile-based movement
 // Moves exactly 1 tile at a time, using the same tile grid Pac-Man uses
+// Synchronized to frame_tick to move once per frame
 // -------------------------------------------------------
-always @(posedge clk or posedge reset) begin
-    if (reset) begin
+always @(posedge clk or negedge reset) begin
+    if (!reset) begin
         blinkyX <= 14;   // Spawn tile X (CENTER TOP like arcade)
         blinkyY <= 12;   // Spawn tile Y
     end else begin
+        if (frame_tick) begin
+            // Horizontal priority (like Pac-Man arcade ghost AI)
+            if (targetX > blinkyX && !wallRight)
+                blinkyX <= blinkyX + 1;
+            else if (targetX < blinkyX && !wallLeft)
+                blinkyX <= blinkyX - 1;
 
-        // Horizontal priority (like Pac-Man arcade ghost AI)
-        if (targetX > blinkyX && !wallRight)
-            blinkyX <= blinkyX + 1;
-        else if (targetX < blinkyX && !wallLeft)
-            blinkyX <= blinkyX - 1;
+            // If blocked horizontally, attempt vertical
+            else if (targetY > blinkyY && !wallDown)
+                blinkyY <= blinkyY + 1;
+            else if (targetY < blinkyY && !wallUp)
+                blinkyY <= blinkyY - 1;
 
-        // If blocked horizontally, attempt vertical
-        else if (targetY > blinkyY && !wallDown)
-            blinkyY <= blinkyY + 1;
-        else if (targetY < blinkyY && !wallUp)
-            blinkyY <= blinkyY - 1;
-
-        // If both X and Y are blocked, Blinky stays in place
+            // If both X and Y are blocked, Blinky stays in place
+        end
     end
 end
 

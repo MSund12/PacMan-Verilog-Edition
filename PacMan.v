@@ -2,6 +2,7 @@ module PacMan(
   input  wire CLOCK_50,
   input  wire KEY0,
   input  wire [9:0] SW,        // NEW: onboard switches
+  input  wire UART_RX,        // NEW: UART receive pin
 
   output wire [9:0] LEDR,
   output wire [6:0] HEX0, HEX1,
@@ -15,10 +16,41 @@ module PacMan(
   wire pclk, pll_locked;
 
   pll_50_to_25 UPLL(
+    .areset(!rst_n),      // Connect reset (active-high)
     .inclk0(CLOCK_50),
     .c0    (pclk),
     .locked(pll_locked)
   );
+
+  // UART receiver
+  wire [7:0] uart_data;
+  wire uart_valid;
+  uart_receiver U_UART_RX (
+    .clk(CLOCK_50),           // Use 50 MHz clock for UART
+    .rst_n(rst_n),
+    .rx(UART_RX),
+    .data(uart_data),
+    .data_valid(uart_valid)
+  );
+
+  // Keyboard decoder
+  wire move_up_uart, move_down_uart, move_left_uart, move_right_uart;
+  keyboard_decoder U_KEY_DECODER (
+    .clk(CLOCK_50),
+    .rst_n(rst_n),
+    .uart_data(uart_data),
+    .uart_valid(uart_valid),
+    .move_up(move_up_uart),
+    .move_down(move_down_uart),
+    .move_left(move_left_uart),
+    .move_right(move_right_uart)
+  );
+
+  // Combine UART and switch inputs (UART takes priority, but switches still work)
+  wire move_up_combined = move_up_uart | SW[3];
+  wire move_down_combined = move_down_uart | SW[2];
+  wire move_left_combined = move_left_uart | SW[1];
+  wire move_right_combined = move_right_uart | SW[0];
 
   wire [9:0] h;
   wire [9:0] v;
@@ -29,11 +61,11 @@ module PacMan(
     .pclk(pclk),
     .rst_n(rst_n & pll_locked),
 
-    // NEW: movement controls from switches
-    .move_up   (SW[3]),
-    .move_down (SW[2]),
-    .move_left (SW[1]),
-    .move_right(SW[0]),
+    // Movement controls from UART or switches
+    .move_up   (move_up_combined),
+    .move_down (move_down_combined),
+    .move_left (move_left_combined),
+    .move_right(move_right_combined),
 
     .h(h),
     .v(v),
@@ -197,8 +229,6 @@ module vga_core_640x480(
   // fractional speed accumulator for 125/99 pixels per frame
   // (≈ 75.7576 px/s at 60 Hz)
   reg [7:0] speed_acc;        // remainder modulo 99
-  reg [7:0] tmp_acc;
-  reg [1:0] step_px;          // 0,1,2 pixels this frame
 
   // center relative to maze origin (unsigned; only used when inside maze)
   wire [9:0] pac_local_x = pac_x - IMG_X0;
@@ -235,7 +265,7 @@ module vga_core_640x480(
   assign check_x = (pac_dir == 2'd0) ? (next_pac_local_x + HIT_RX) :  // right: check right edge
                     (pac_dir == 2'd1) ? ((next_pac_local_x >= HIT_RX) ? (next_pac_local_x - HIT_RX) : 10'd0) :  // left: check left edge
                     next_pac_local_x;  // up/down: use center x
-    assign check_y =
+  assign check_y =
       (pac_dir == 2'd2) ?                       // moving up
           ((next_pac_local_y >= HIT_RY_UP) ?
               (next_pac_local_y - HIT_RY_UP) :
@@ -266,9 +296,10 @@ module vga_core_640x480(
   // Movement at ~75.7576 px/s using 125/99 pixels per frame
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
-      // Pac-Man starting tile: (13, 26), facing left
-      pac_x     <= IMG_X0 + (14*8);        // = 316
-      pac_y     <= IMG_Y0 + (28*8) + 4;    // = 308
+      // Pac-Man starting tile: (14, 28), facing left
+      // Tile 14 = 14*8 = 112 pixels, Tile 28 = 28*8 = 224 pixels
+      pac_x     <= IMG_X0 + (14*8);        // = 208 + 112 = 320
+      pac_y     <= IMG_Y0 + (28*8) + 4;    // = 96 + 224 + 4 = 324
       pac_dir   <= 2'd1;                   // left
       speed_acc <= 8'd0;
     end else begin
@@ -285,16 +316,17 @@ module vga_core_640x480(
             2'd3: pac_y <= pac_y + step_px_wire;  // down
           endcase
         end
+        
+        // Direction changes synchronized to frame_tick
+        if (move_up)
+          pac_dir <= 2'd2;   // up
+        else if (move_down)
+          pac_dir <= 2'd3;   // down
+        else if (move_left)
+          pac_dir <= 2'd1;   // left
+        else if (move_right)
+          pac_dir <= 2'd0;   // right
       end
-
-      if (move_up)
-        pac_dir <= 2'd2;   // up
-      else if (move_down)
-        pac_dir <= 2'd3;   // down
-      else if (move_left)
-        pac_dir <= 2'd1;   // left
-      else if (move_right)
-        pac_dir <= 2'd0;   // right
     end
   end
 
@@ -319,28 +351,35 @@ module vga_core_640x480(
   wire blinky_wall_up_rom, blinky_wall_down_rom, blinky_wall_left_rom, blinky_wall_right_rom;
   
   // Check walls in adjacent tiles (or treat boundaries as walls)
-  wire [9:0] blinky_tile_idx_up    = blinky_tile_idx - 10'd28;
-  wire [9:0] blinky_tile_idx_down  = blinky_tile_idx + 10'd28;
-  wire [9:0] blinky_tile_idx_left  = blinky_tile_idx - 10'd1;
-  wire [9:0] blinky_tile_idx_right = blinky_tile_idx + 10'd1;
+  // Use 1008 as sentinel value for invalid/boundary tiles (valid range is 0-1007)
+  wire [9:0] blinky_tile_idx_up    = (blinky_tile_y > 0) ? (blinky_tile_idx - 10'd28) : 10'd1008;
+  wire [9:0] blinky_tile_idx_down  = (blinky_tile_y < 35) ? (blinky_tile_idx + 10'd28) : 10'd1008;
+  wire [9:0] blinky_tile_idx_left  = (blinky_tile_x > 0) ? (blinky_tile_idx - 10'd1) : 10'd1008;
+  wire [9:0] blinky_tile_idx_right = (blinky_tile_x < 27) ? (blinky_tile_idx + 10'd1) : 10'd1008;
+
+  // Bounds checking: ensure tile indices are valid before ROM access
+  wire [9:0] blinky_tile_idx_up_safe    = (blinky_tile_idx_up < 10'd1008) ? blinky_tile_idx_up : 10'd0;
+  wire [9:0] blinky_tile_idx_down_safe  = (blinky_tile_idx_down < 10'd1008) ? blinky_tile_idx_down : 10'd0;
+  wire [9:0] blinky_tile_idx_left_safe  = (blinky_tile_idx_left < 10'd1008) ? blinky_tile_idx_left : 10'd0;
+  wire [9:0] blinky_tile_idx_right_safe = (blinky_tile_idx_right < 10'd1008) ? blinky_tile_idx_right : 10'd0;
 
   level_rom ULEVEL_BLINKY_UP (
-    .tile_index(blinky_tile_idx_up),
+    .tile_index(blinky_tile_idx_up_safe),
     .is_wall(blinky_wall_up_rom)
   );
   
   level_rom ULEVEL_BLINKY_DOWN (
-    .tile_index(blinky_tile_idx_down),
+    .tile_index(blinky_tile_idx_down_safe),
     .is_wall(blinky_wall_down_rom)
   );
   
   level_rom ULEVEL_BLINKY_LEFT (
-    .tile_index(blinky_tile_idx_left),
+    .tile_index(blinky_tile_idx_left_safe),
     .is_wall(blinky_wall_left_rom)
   );
   
   level_rom ULEVEL_BLINKY_RIGHT (
-    .tile_index(blinky_tile_idx_right),
+    .tile_index(blinky_tile_idx_right_safe),
     .is_wall(blinky_wall_right_rom)
   );
 
@@ -366,7 +405,8 @@ module vga_core_640x480(
   // Instantiate blinky module
   blinky UBLINKY (
     .clk(pclk),
-    .reset(!rst_n),
+    .reset(rst_n & pll_locked),  // active-low reset, wait for PLL lock
+    .frame_tick(frame_tick),  // Synchronize movement to frame timing
     .pacmanX(pacman_tile_x),
     .pacmanY(pacman_tile_y),
     .isChase(isChase),
@@ -387,10 +427,12 @@ module vga_core_640x480(
   wire [9:0] pac_top  = pac_y - PAC_R;
 
   // sprite-local coordinates at this pixel
+  // Check bounds to handle negative values properly
   wire [9:0] spr_x_full = h_d - pac_left;
   wire [9:0] spr_y_full = v_d - pac_top;
 
-  wire       in_pac_box = (spr_x_full < SPR_W) && (spr_y_full < SPR_H);
+  wire       in_pac_box = (h_d >= pac_left) && (v_d >= pac_top) && 
+                          (spr_x_full < SPR_W) && (spr_y_full < SPR_H);
 
   wire [3:0] spr_x = spr_x_full[3:0];  // 0..15
   wire [3:0] spr_y = spr_y_full[3:0];  // 0..15
@@ -399,12 +441,22 @@ module vga_core_640x480(
 
   wire [3:0] pac_pix_data;
   pacman_rom_16x16_4bpp UPAC (
+    .clk(pclk),
     .addr(pac_addr),
     .data(pac_pix_data)
   );
 
+  // Delay sprite box check by one cycle to match ROM output timing
+  reg in_pac_box_d;
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n)
+      in_pac_box_d <= 1'b0;
+    else
+      in_pac_box_d <= in_pac_box;
+  end
+
   // Pac-Man pixel is "active" when inside box and sprite index != 0 (0 = transparent)
-  wire pac_pix = in_pac_box && (pac_pix_data != 4'h0);
+  wire pac_pix = in_pac_box_d && (pac_pix_data != 4'h0);
 
   // -------------------------
   // Blinky sprite (16x16) using Blinky.hex
@@ -414,10 +466,12 @@ module vga_core_640x480(
   wire [9:0] blinky_top  = blinky_y - PAC_R;
 
   // sprite-local coordinates at this pixel
+  // Check bounds to handle negative values properly
   wire [9:0] blinky_spr_x_full = h_d - blinky_left;
   wire [9:0] blinky_spr_y_full = v_d - blinky_top;
 
-  wire       in_blinky_box = (blinky_spr_x_full < SPR_W) && (blinky_spr_y_full < SPR_H);
+  wire       in_blinky_box = (h_d >= blinky_left) && (v_d >= blinky_top) && 
+                              (blinky_spr_x_full < SPR_W) && (blinky_spr_y_full < SPR_H);
 
   wire [3:0] blinky_spr_x = blinky_spr_x_full[3:0];  // 0..15
   wire [3:0] blinky_spr_y = blinky_spr_y_full[3:0];  // 0..15
@@ -426,12 +480,22 @@ module vga_core_640x480(
 
   wire [3:0] blinky_pix_data;
   blinky_rom_16x16_4bpp UBLINKY_ROM (
+    .clk(pclk),
     .addr(blinky_addr),
     .data(blinky_pix_data)
   );
 
+  // Delay sprite box check by one cycle to match ROM output timing
+  reg in_blinky_box_d;
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n)
+      in_blinky_box_d <= 1'b0;
+    else
+      in_blinky_box_d <= in_blinky_box;
+  end
+
   // Blinky pixel is "active" when inside box and sprite index != 0 (0 = transparent)
-  wire blinky_pix = in_blinky_box && (blinky_pix_data != 4'h0);
+  wire blinky_pix = in_blinky_box_d && (blinky_pix_data != 4'h0);
 
   // -------------------------
   // RGB output with sprite overlay
@@ -515,6 +579,7 @@ endmodule
 
 // Pac-Man sprite: 16x16, 4-bit pixels (0=transparent, 7=yellow) from Pacman.hex
 module pacman_rom_16x16_4bpp (
+    input  wire        clk,
     input  wire [7:0] addr,   // 0 .. 255
     output reg  [3:0] data
 );
@@ -524,14 +589,15 @@ module pacman_rom_16x16_4bpp (
         $readmemh("Pacman.hex", mem);
     end
 
-    always @* begin
-        data = mem[addr];
+    always @(posedge clk) begin
+        data <= mem[addr];
     end
 endmodule
 
 
 // Blinky sprite: 16x16, 4-bit pixels (0=transparent, 7=red) from Blinky.hex
 module blinky_rom_16x16_4bpp (
+    input  wire        clk,
     input  wire [7:0] addr,   // 0 .. 255
     output reg  [3:0] data
 );
@@ -541,8 +607,8 @@ module blinky_rom_16x16_4bpp (
         $readmemh("Blinky.hex", mem);
     end
 
-    always @* begin
-        data = mem[addr];
+    always @(posedge clk) begin
+        data <= mem[addr];
     end
 endmodule
 
@@ -565,5 +631,5 @@ module level_rom (
         $readmemb("level_map.bin", bits);
     end
 
-    assign is_wall = bits[tile_index];
+    assign is_wall = (tile_index < 10'd1008) ? bits[tile_index] : 1'b0;
 endmodule
