@@ -163,21 +163,26 @@ set_location_assignment PIN_C10 -to SW[0]
 set_location_assignment PIN_C11 -to SW[1]
 set_location_assignment PIN_D12 -to SW[2]
 set_location_assignment PIN_C12 -to SW[3]
+set_location_assignment PIN_A12 -to SW[9]
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to SW[0]
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to SW[1]
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to SW[2]
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to SW[3]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to SW[9]
 
-# ISSP (In-System Sources and Probes) configuration
-# Enable ISSP for keyboard control via JTAG
-# The ISSP instance is automatically detected by Quartus via instance_id in altsource_probe
-set_instance_assignment -name ENABLE_INIT_DONE_SCRIPT ON
+# UART RX pin (GPIO_0 pin - adjust pin number based on your DE10-Lite GPIO header connection)
+# Common GPIO_0 pins: AB2, AB3, AB4, AB5, etc.
+# Check DE10-Lite manual for exact GPIO pin numbers
+# Using GPIO_0[0] which is typically PIN_AB2
+set_location_assignment PIN_AB2 -to UART_RX
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to UART_RX
 
-set_global_assignment -name VERILOG_FILE levelSpecs.v
-set_global_assignment -name VERILOG_FILE blinky.v
-set_global_assignment -name VERILOG_FILE issp_control.v
-set_global_assignment -name VERILOG_FILE PacMan.v
-set_global_assignment -name QIP_FILE pll_50_to_25.qip
 set_global_assignment -name POWER_PRESET_COOLING_SOLUTION "23 MM HEAT SINK WITH 200 LFPM AIRFLOW"
 set_global_assignment -name POWER_BOARD_THERMAL_MODEL "NONE (CONSERVATIVE)"
+set_global_assignment -name VERILOG_FILE score_manager.v
+set_global_assignment -name VERILOG_FILE dot_map.v
+set_global_assignment -name VERILOG_FILE levelSpecs.v
+set_global_assignment -name VERILOG_FILE blinky.v
+set_global_assignment -name VERILOG_FILE PacMan.v
+set_global_assignment -name QIP_FILE pll_50_to_25.qip
 set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top

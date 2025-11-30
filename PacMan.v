@@ -21,56 +21,20 @@ module PacMan(
     .locked(pll_locked)
   );
 
-  // ISSP control (JTAG-based keyboard control)
-  wire move_up_issp, move_down_issp, move_left_issp, move_right_issp, start_game_issp;
-  issp_control U_ISSP_CTRL (
-    .clk(CLOCK_50),
-    .rst_n(rst_n),
-    .move_up(move_up_issp),
-    .move_down(move_down_issp),
-    .move_left(move_left_issp),
-    .move_right(move_right_issp),
-    .start_game(start_game_issp)
-  );
+  // Switch-based control (direct connection to switches)
+  wire move_up_50mhz = SW[3];
+  wire move_down_50mhz = SW[2];
+  wire move_left_50mhz = SW[1];
+  wire move_right_50mhz = SW[0];
 
-  // Convert pulse-based ISSP signals to level-based signals (CLOCK_50 domain)
-  reg move_up_issp_level, move_down_issp_level, move_left_issp_level, move_right_issp_level;
+  // Start game signal from SW[9]
+  reg start_game_level;
   always @(posedge CLOCK_50 or negedge rst_n) begin
     if (!rst_n) begin
-      move_up_issp_level <= 1'b0;
-      move_down_issp_level <= 1'b0;
-      move_left_issp_level <= 1'b0;
-      move_right_issp_level <= 1'b0;
+      start_game_level <= 1'b0;
     end else begin
-      // Set on pulse, clear when switch is released (if using switches)
-      if (move_up_issp) move_up_issp_level <= 1'b1;
-      else if (!SW[3]) move_up_issp_level <= 1'b0;
-      
-      if (move_down_issp) move_down_issp_level <= 1'b1;
-      else if (!SW[2]) move_down_issp_level <= 1'b0;
-      
-      if (move_left_issp) move_left_issp_level <= 1'b1;
-      else if (!SW[1]) move_left_issp_level <= 1'b0;
-      
-      if (move_right_issp) move_right_issp_level <= 1'b1;
-      else if (!SW[0]) move_right_issp_level <= 1'b0;
-    end
-  end
-
-  // Combine ISSP and switch inputs (ISSP takes priority, switches as fallback)
-  wire move_up_50mhz = move_up_issp_level | SW[3];
-  wire move_down_50mhz = move_down_issp_level | SW[2];
-  wire move_left_50mhz = move_left_issp_level | SW[1];
-  wire move_right_50mhz = move_right_issp_level | SW[0];
-
-  // Convert start_game pulse to level-based signal (CLOCK_50 domain)
-  reg start_game_issp_level;
-  always @(posedge CLOCK_50 or negedge rst_n) begin
-    if (!rst_n) begin
-      start_game_issp_level <= 1'b0;
-    end else begin
-      // Set on pulse, stays set once pulse is received
-      if (start_game_issp) start_game_issp_level <= 1'b1;
+      // Set when SW[9] is pressed, stays set once pressed
+      if (SW[9]) start_game_level <= 1'b1;
     end
   end
 
@@ -104,7 +68,7 @@ module PacMan(
       start_game_sync_stage1 <= 1'b0;
       start_game_sync_stage2 <= 1'b0;
     end else begin
-      start_game_sync_stage1 <= start_game_issp_level;
+      start_game_sync_stage1 <= start_game_level;
       start_game_sync_stage2 <= start_game_sync_stage1;
     end
   end
@@ -708,6 +672,9 @@ module vga_core_640x480(
     .fright_flashes()  // unused for now
   );
 
+  // Track if player has pressed a direction key (to keep pacman still at start)
+  reg player_has_moved;
+  
   // Movement at ~75.7576 px/s using 125/99 pixels per frame
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
@@ -717,8 +684,19 @@ module vga_core_640x480(
       pac_y     <= IMG_Y0 + (28*8) + 4;    // = 96 + 224 + 4 = 324
       pac_dir   <= 2'd1;                   // left
       speed_acc <= 8'd0;
+      player_has_moved <= 1'b0;
     end else begin
-      if (frame_tick && game_started) begin
+      // Reset player_has_moved when game state changes to ATTRACT or READY
+      if (game_state == STATE_ATTRACT || game_state == STATE_READY) begin
+        player_has_moved <= 1'b0;
+      end
+      
+      // Check if player pressed a direction key
+      if (game_started && (move_up || move_down || move_left || move_right)) begin
+        player_has_moved <= 1'b1;
+      end
+      
+      if (frame_tick && game_started && player_has_moved) begin
         // Use the pre-calculated step_px_wire for movement
         speed_acc <= tmp_acc_after_second;
 
@@ -731,8 +709,13 @@ module vga_core_640x480(
             2'd3: pac_y <= pac_y + step_px_wire;  // down
           endcase
         end
-        
-        // Direction changes synchronized to frame_tick (only when game started)
+      end else if (frame_tick && game_started) begin
+        // When game starts but player hasn't moved yet, reset speed accumulator
+        speed_acc <= 8'd0;
+      end
+      
+      // Direction changes synchronized to frame_tick (only when game started)
+      if (game_started) begin
         if (move_up)
           pac_dir <= 2'd2;   // up
         else if (move_down)
@@ -868,16 +851,16 @@ module vga_core_640x480(
   wire [3:0] spr_y = spr_y_full[3:0];  // 0..15
 
   // Rotate/flip sprite based on direction
-  // Right (0): normal, Left (1): horizontal flip, Up (2): 90° CCW, Down (3): 90° CW
+  // Right (0): normal, Left (1): horizontal flip, Up (2): 90° CW, Down (3): 90° CCW
   wire [3:0] spr_x_rotated, spr_y_rotated;
   assign spr_x_rotated = (pac_dir == 2'd0) ? spr_x :                    // right: normal
                          (pac_dir == 2'd1) ? (4'd15 - spr_x) :          // left: flip H
-                         (pac_dir == 2'd2) ? spr_y :                    // up: rotate CCW
-                         (4'd15 - spr_y);                               // down: rotate CW
+                         (pac_dir == 2'd2) ? (4'd15 - spr_y) :          // up: rotate CW (swapped)
+                         spr_y;                                         // down: rotate CCW (swapped)
   assign spr_y_rotated = (pac_dir == 2'd0) ? spr_y :                    // right: normal
                          (pac_dir == 2'd1) ? spr_y :                    // left: flip H
-                         (pac_dir == 2'd2) ? (4'd15 - spr_x) :          // up: rotate CCW
-                         spr_x;                                         // down: rotate CW
+                         (pac_dir == 2'd2) ? spr_x :                    // up: rotate CW (swapped)
+                         (4'd15 - spr_x);                               // down: rotate CCW (swapped)
 
   wire [7:0] pac_addr = (spr_y_rotated << 4) | spr_x_rotated;  // y*16 + x (rotated)
 
