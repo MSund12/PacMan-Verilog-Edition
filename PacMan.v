@@ -1,8 +1,7 @@
 module PacMan(
   input  wire CLOCK_50,
   input  wire KEY0,
-  input  wire [9:0] SW,        // NEW: onboard switches
-  input  wire UART_RX,        // NEW: UART receive pin
+  input  wire [9:0] SW,        // Onboard switches
 
   output wire [9:0] LEDR,
   output wire [6:0] HEX0, HEX1,
@@ -22,69 +21,56 @@ module PacMan(
     .locked(pll_locked)
   );
 
-  // UART receiver
-  wire [7:0] uart_data;
-  wire uart_valid;
-  uart_receiver U_UART_RX (
-    .clk(CLOCK_50),           // Use 50 MHz clock for UART
-    .rst_n(rst_n),
-    .rx(UART_RX),
-    .data(uart_data),
-    .data_valid(uart_valid)
-  );
-
-  // Keyboard decoder
-  wire move_up_uart, move_down_uart, move_left_uart, move_right_uart, start_game_uart;
-  keyboard_decoder U_KEY_DECODER (
+  // ISSP control (JTAG-based keyboard control)
+  wire move_up_issp, move_down_issp, move_left_issp, move_right_issp, start_game_issp;
+  issp_control U_ISSP_CTRL (
     .clk(CLOCK_50),
     .rst_n(rst_n),
-    .uart_data(uart_data),
-    .uart_valid(uart_valid),
-    .move_up(move_up_uart),
-    .move_down(move_down_uart),
-    .move_left(move_left_uart),
-    .move_right(move_right_uart),
-    .start_game(start_game_uart)
+    .move_up(move_up_issp),
+    .move_down(move_down_issp),
+    .move_left(move_left_issp),
+    .move_right(move_right_issp),
+    .start_game(start_game_issp)
   );
 
-  // Convert pulse-based UART signals to level-based signals (CLOCK_50 domain)
-  reg move_up_uart_level, move_down_uart_level, move_left_uart_level, move_right_uart_level;
+  // Convert pulse-based ISSP signals to level-based signals (CLOCK_50 domain)
+  reg move_up_issp_level, move_down_issp_level, move_left_issp_level, move_right_issp_level;
   always @(posedge CLOCK_50 or negedge rst_n) begin
     if (!rst_n) begin
-      move_up_uart_level <= 1'b0;
-      move_down_uart_level <= 1'b0;
-      move_left_uart_level <= 1'b0;
-      move_right_uart_level <= 1'b0;
+      move_up_issp_level <= 1'b0;
+      move_down_issp_level <= 1'b0;
+      move_left_issp_level <= 1'b0;
+      move_right_issp_level <= 1'b0;
     end else begin
       // Set on pulse, clear when switch is released (if using switches)
-      if (move_up_uart) move_up_uart_level <= 1'b1;
-      else if (!SW[3]) move_up_uart_level <= 1'b0;
+      if (move_up_issp) move_up_issp_level <= 1'b1;
+      else if (!SW[3]) move_up_issp_level <= 1'b0;
       
-      if (move_down_uart) move_down_uart_level <= 1'b1;
-      else if (!SW[2]) move_down_uart_level <= 1'b0;
+      if (move_down_issp) move_down_issp_level <= 1'b1;
+      else if (!SW[2]) move_down_issp_level <= 1'b0;
       
-      if (move_left_uart) move_left_uart_level <= 1'b1;
-      else if (!SW[1]) move_left_uart_level <= 1'b0;
+      if (move_left_issp) move_left_issp_level <= 1'b1;
+      else if (!SW[1]) move_left_issp_level <= 1'b0;
       
-      if (move_right_uart) move_right_uart_level <= 1'b1;
-      else if (!SW[0]) move_right_uart_level <= 1'b0;
+      if (move_right_issp) move_right_issp_level <= 1'b1;
+      else if (!SW[0]) move_right_issp_level <= 1'b0;
     end
   end
 
-  // Combine UART and switch inputs (UART takes priority, but switches still work)
-  wire move_up_50mhz = move_up_uart_level | SW[3];
-  wire move_down_50mhz = move_down_uart_level | SW[2];
-  wire move_left_50mhz = move_left_uart_level | SW[1];
-  wire move_right_50mhz = move_right_uart_level | SW[0];
+  // Combine ISSP and switch inputs (ISSP takes priority, switches as fallback)
+  wire move_up_50mhz = move_up_issp_level | SW[3];
+  wire move_down_50mhz = move_down_issp_level | SW[2];
+  wire move_left_50mhz = move_left_issp_level | SW[1];
+  wire move_right_50mhz = move_right_issp_level | SW[0];
 
   // Convert start_game pulse to level-based signal (CLOCK_50 domain)
-  reg start_game_uart_level;
+  reg start_game_issp_level;
   always @(posedge CLOCK_50 or negedge rst_n) begin
     if (!rst_n) begin
-      start_game_uart_level <= 1'b0;
+      start_game_issp_level <= 1'b0;
     end else begin
-      // Set on pulse, stays set once Enter is pressed
-      if (start_game_uart) start_game_uart_level <= 1'b1;
+      // Set on pulse, stays set once pulse is received
+      if (start_game_issp) start_game_issp_level <= 1'b1;
     end
   end
 
@@ -118,7 +104,7 @@ module PacMan(
       start_game_sync_stage1 <= 1'b0;
       start_game_sync_stage2 <= 1'b0;
     end else begin
-      start_game_sync_stage1 <= start_game_uart_level;
+      start_game_sync_stage1 <= start_game_issp_level;
       start_game_sync_stage2 <= start_game_sync_stage1;
     end
   end
@@ -284,8 +270,8 @@ module vga_core_640x480(
   );
   
   // Tile coordinates for current pixel (for dot checking during rendering)
-  wire [8:0] img_x_addr_d = h_d - IMG_X0;  // 0..223
-  wire [8:0] img_y_addr_d = v_d - IMG_Y0;  // 0..287
+  wire [9:0] img_x_addr_d = h_d - IMG_X0;  // 0..223
+  wire [9:0] img_y_addr_d = v_d - IMG_Y0;  // 0..287
   wire [4:0] render_tile_x = img_x_addr_d[9:3];  // 0..27
   wire [5:0] render_tile_y = img_y_addr_d[9:3];  // 0..35
   wire [9:0] render_tile_index = ((render_tile_y << 5) - (render_tile_y << 2)) + render_tile_x;
@@ -340,6 +326,11 @@ module vga_core_640x480(
   localparam [2:0] STATE_DYING = 3'd3;
   localparam [2:0] STATE_GAME_OVER = 3'd4;
   localparam [2:0] STATE_LEVEL_COMPLETE = 3'd5;
+  
+  // Game state variables
+  reg [2:0] game_state;
+  reg [4:0] current_level;
+  reg [15:0] dying_timer;
   
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
@@ -654,6 +645,11 @@ module vga_core_640x480(
   reg [4:0] last_collected_tile_x;
   reg [5:0] last_collected_tile_y;
   reg [9:0] level_reset_counter;
+  
+  // Combinational logic for dot collection detection
+  wire new_tile = (pac_center_tile_x != last_collected_tile_x) || (pac_center_tile_y != last_collected_tile_y);
+  wire entering_dot_tile = dot_has_dot && !dot_has_dot_prev && game_started && pac_in_maze && !pac_center_wall;
+  
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       dot_collected <= 1'b0;
@@ -667,8 +663,6 @@ module vga_core_640x480(
       
       // Generate one-cycle pulse when entering a tile with a dot
       // Also check that we haven't already collected from this tile
-      wire new_tile = (pac_center_tile_x != last_collected_tile_x) || (pac_center_tile_y != last_collected_tile_y);
-      wire entering_dot_tile = dot_has_dot && !dot_has_dot_prev && game_started && pac_in_maze && !pac_center_wall;
       
       if (entering_dot_tile && new_tile) begin
         dot_collected <= 1'b1;
@@ -713,19 +707,6 @@ module vga_core_640x480(
     .fright_time(),  // unused for now
     .fright_flashes()  // unused for now
   );
-
-  // Game start state: set when Enter is pressed
-  always @(posedge pclk or negedge rst_n) begin
-    if (!rst_n) begin
-      game_started <= 1'b0;
-      current_level <= 5'd1;  // Start at level 1
-    end else begin
-      if (start_game) begin
-        game_started <= 1'b1;
-      end
-      // Level advancement logic can be added here later
-    end
-  end
 
   // Movement at ~75.7576 px/s using 125/99 pixels per frame
   always @(posedge pclk or negedge rst_n) begin
