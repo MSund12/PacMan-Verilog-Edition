@@ -514,7 +514,7 @@ module vga_core_640x480(
         4'hC: palette_lookup = {4'h0, 4'h0, 4'hF};      // Blue (walls)
         4'hD: palette_lookup = {4'hF, 4'h0, 4'hF};      // Magenta
         4'hE: palette_lookup = {4'h0, 4'hF, 4'hF};      // Cyan
-        4'hF: palette_lookup = {4'hF, 4'hF, 4'hF};      // White (dots)
+        4'hF: palette_lookup = {4'hF, 4'hF, 4'hF};      // White
         default: palette_lookup = {4'h0, 4'h0, 4'h0};   // Black (fallback)
       endcase
     end
