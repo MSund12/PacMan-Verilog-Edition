@@ -109,6 +109,11 @@ module vga_core_640x480(
   localparam PAC_R = 6;        // 13x13 sprite radius
   localparam SPR_W = 13;
   localparam SPR_H = 13;
+  
+  // Ghost sprite parameters (16x16)
+  localparam GHOST_R = 8;      // 16x16 sprite radius
+  localparam GHOST_W = 16;
+  localparam GHOST_H = 16;
 
   // -------------------------
   // H/V counters (stage 0)
@@ -227,39 +232,83 @@ module vga_core_640x480(
                              (pac_dir == 2'd3) ? (pac_local_y + step_px_wire) :
                              pac_local_y;
 
-  // Check collision at the front edge of the hitbox AFTER movement
-  // This prevents Pac-Man from entering walls
-  wire [9:0] check_x, check_y;
-  assign check_x = (pac_dir == 2'd0) ? (next_pac_local_x + HIT_RX) :  // right: check right edge
-                    (pac_dir == 2'd1) ? ((next_pac_local_x >= HIT_RX) ? (next_pac_local_x - HIT_RX) : 10'd0) :  // left: check left edge
-                    next_pac_local_x;  // up/down: use center x
-    assign check_y =
-      (pac_dir == 2'd2) ?                       // moving up
-          ((next_pac_local_y >= HIT_RY) ?
-              (next_pac_local_y - HIT_RY) :
-              10'd0)
-    : (pac_dir == 2'd3) ?                       // moving down
-          (next_pac_local_y + HIT_RY)
-    : next_pac_local_y;                         // left/right
+  // Pixel-based collision detection: check all pixels along movement path
+  // This prevents Pac-Man from skipping over 1-pixel-wide walls
+  
+  // Calculate positions for 1px and 2px ahead along movement direction
+  wire [9:0] pac_local_x_1px, pac_local_y_1px;
+  wire [9:0] pac_local_x_2px, pac_local_y_2px;
+  
+  assign pac_local_x_1px = (pac_dir == 2'd0) ? (pac_local_x + 10'd1) :  // right
+                           (pac_dir == 2'd1) ? (pac_local_x - 10'd1) :  // left
+                           pac_local_x;  // up/down: no change
+  assign pac_local_y_1px = (pac_dir == 2'd2) ? (pac_local_y - 10'd1) :  // up
+                           (pac_dir == 2'd3) ? (pac_local_y + 10'd1) :  // down
+                           pac_local_y;  // left/right: no change
+                           
+  assign pac_local_x_2px = (pac_dir == 2'd0) ? (pac_local_x + 10'd2) :  // right
+                           (pac_dir == 2'd1) ? (pac_local_x - 10'd2) :  // left
+                           pac_local_x;  // up/down: no change
+  assign pac_local_y_2px = (pac_dir == 2'd2) ? (pac_local_y - 10'd2) :  // up
+                           (pac_dir == 2'd3) ? (pac_local_y + 10'd2) :  // down
+                           pac_local_y;  // left/right: no change
 
+  // Calculate check positions at front edge of hitbox for 1px and 2px ahead
+  // For horizontal movement: check left/right edge; for vertical: check top/bottom edge
+  wire [9:0] check_x_1px, check_y_1px;
+  wire [9:0] check_x_2px, check_y_2px;
+  
+  assign check_x_1px = (pac_dir == 2'd0) ? (pac_local_x_1px + HIT_RX) :  // right: check right edge
+                        (pac_dir == 2'd1) ? ((pac_local_x_1px >= HIT_RX) ? (pac_local_x_1px - HIT_RX) : 10'd0) :  // left: check left edge
+                        pac_local_x_1px;  // up/down: use center x
+  assign check_y_1px = (pac_dir == 2'd2) ? ((pac_local_y_1px >= HIT_RY) ? (pac_local_y_1px - HIT_RY) : 10'd0) :  // up: check top edge
+                        (pac_dir == 2'd3) ? (pac_local_y_1px + HIT_RY) :  // down: check bottom edge
+                        pac_local_y_1px;  // left/right: use center y
+                        
+  assign check_x_2px = (pac_dir == 2'd0) ? (pac_local_x_2px + HIT_RX) :  // right: check right edge
+                        (pac_dir == 2'd1) ? ((pac_local_x_2px >= HIT_RX) ? (pac_local_x_2px - HIT_RX) : 10'd0) :  // left: check left edge
+                        pac_local_x_2px;  // up/down: use center x
+  assign check_y_2px = (pac_dir == 2'd2) ? ((pac_local_y_2px >= HIT_RY) ? (pac_local_y_2px - HIT_RY) : 10'd0) :  // up: check top edge
+                        (pac_dir == 2'd3) ? (pac_local_y_2px + HIT_RY) :  // down: check bottom edge
+                        pac_local_y_2px;  // left/right: use center y
 
   // Clamp to valid image bounds
-  wire [9:0] check_x_clamped = (check_x > IMG_W-1) ? IMG_W-1 : check_x;
-  wire [9:0] check_y_clamped = (check_y > IMG_H-1) ? IMG_H-1 : check_y;
+  wire [9:0] check_x_1px_clamped = (check_x_1px > IMG_W-1) ? IMG_W-1 : check_x_1px;
+  wire [9:0] check_y_1px_clamped = (check_y_1px > IMG_H-1) ? IMG_H-1 : check_y_1px;
+  wire [9:0] check_x_2px_clamped = (check_x_2px > IMG_W-1) ? IMG_W-1 : check_x_2px;
+  wire [9:0] check_y_2px_clamped = (check_y_2px > IMG_H-1) ? IMG_H-1 : check_y_2px;
 
-  // Tile under the front edge of hitbox AFTER movement
-  wire [4:0] pac_tile_x = check_x_clamped[9:3];  // 0..27
-  wire [5:0] pac_tile_y = check_y_clamped[9:3];  // 0..35
+  // Calculate ROM addresses for pixel checks
+  // Address = y * 224 + x = (y << 8) - (y << 5) + x
+  wire [15:0] wall_addr_1px = ((check_y_1px_clamped << 8) - (check_y_1px_clamped << 5)) + check_x_1px_clamped;
+  wire [15:0] wall_addr_2px = ((check_y_2px_clamped << 8) - (check_y_2px_clamped << 5)) + check_x_2px_clamped;
 
-  // linear tile index = tile_y*28 + tile_x (28 = 32 - 4)
-  wire [9:0] idx_y             = (pac_tile_y << 5) - (pac_tile_y << 2);
-  wire [9:0] target_tile_index = idx_y + pac_tile_x;
-
-  wire wall_at_target;
-  level_rom ULEVEL (
-    .tile_index(target_tile_index),
-    .is_wall   (wall_at_target)
+  // Read pixel values from image ROM (wall pixels = 0xC = 4'hC)
+  wire [3:0] wall_pix_1px, wall_pix_2px;
+  image_rom_224x288_4bpp UWALL_1PX (
+    .clk (pclk),
+    .addr(wall_addr_1px),
+    .data(wall_pix_1px)
   );
+  image_rom_224x288_4bpp UWALL_2PX (
+    .clk (pclk),
+    .addr(wall_addr_2px),
+    .data(wall_pix_2px)
+  );
+
+  // Register pixel values to handle ROM latency (1 cycle)
+  reg [3:0] wall_pix_1px_reg, wall_pix_2px_reg;
+  always @(posedge pclk) begin
+    wall_pix_1px_reg <= wall_pix_1px;
+    wall_pix_2px_reg <= wall_pix_2px;
+  end
+
+  // Collision detected if any checked pixel is a wall (0xC)
+  // Check 1px position if moving at least 1px, check 2px position if moving 2px
+  wire wall_at_1px = (wall_pix_1px_reg == 4'hC);
+  wire wall_at_2px = (wall_pix_2px_reg == 4'hC);
+  wire wall_at_target = (step_px_wire >= 2'd1 && wall_at_1px) || 
+                        (step_px_wire >= 2'd2 && wall_at_2px);
 
   // Movement at ~75.7576 px/s using 125/99 pixels per frame
   always @(posedge pclk or negedge rst_n) begin
@@ -391,8 +440,9 @@ module vga_core_640x480(
 
   wire       in_pac_box = (spr_x_full < SPR_W) && (spr_y_full < SPR_H);
 
-  wire [3:0] spr_x = spr_x_full[3:0];  // 0..12
-  wire [3:0] spr_y = spr_y_full[3:0];  // 0..12
+  // Clamp sprite coordinates to valid range (0-12) to prevent out-of-bounds ROM access
+  wire [3:0] spr_x = (spr_x_full >= SPR_W) ? 4'd12 : spr_x_full[3:0];  // 0..12
+  wire [3:0] spr_y = (spr_y_full >= SPR_H) ? 4'd12 : spr_y_full[3:0];  // 0..12
 
   // Address calculation: y*13 + x = y*8 + y*4 + y + x
   wire [7:0] pac_addr = ((spr_y << 3) + (spr_y << 2) + spr_y + spr_x);  // y*13 + x
@@ -410,14 +460,14 @@ module vga_core_640x480(
   // Blinky sprite (16x16) using Blinky.hex
   // -------------------------
   // top-left of sprite box
-  wire [9:0] blinky_left = blinky_x - PAC_R;
-  wire [9:0] blinky_top  = blinky_y - PAC_R;
+  wire [9:0] blinky_left = blinky_x - GHOST_R;
+  wire [9:0] blinky_top  = blinky_y - GHOST_R;
 
   // sprite-local coordinates at this pixel
   wire [9:0] blinky_spr_x_full = h_d - blinky_left;
   wire [9:0] blinky_spr_y_full = v_d - blinky_top;
 
-  wire       in_blinky_box = (blinky_spr_x_full < SPR_W) && (blinky_spr_y_full < SPR_H);
+  wire       in_blinky_box = (blinky_spr_x_full < GHOST_W) && (blinky_spr_y_full < GHOST_H);
 
   wire [3:0] blinky_spr_x = blinky_spr_x_full[3:0];  // 0..15
   wire [3:0] blinky_spr_y = blinky_spr_y_full[3:0];  // 0..15
