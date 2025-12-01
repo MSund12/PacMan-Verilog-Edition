@@ -22,11 +22,11 @@ module pinky(
 /* 
 Pinky (Pink Ghost)
 Chase mode: target 4 tiles ahead of Pac-Man in his current moving direction
-Scatter mode: target top-left corner
+Scatter mode: target top-right corner
 */
 
 // Scatter corner
-localparam [5:0] CORNER_X = 0;
+localparam [5:0] CORNER_X = 27;
 localparam [5:0] CORNER_Y = 0;
 
 // Pixel-based starting position
@@ -107,10 +107,19 @@ always @(*) begin
 end
 
 // -------------------------------------------------------
-// Track current direction to prevent unnecessary reversals
+// Legal movement flags
+// -------------------------------------------------------
+wire canUp    = !wallUp;
+wire canDown  = !wallDown;
+wire canLeft  = !wallLeft;
+wire canRight = !wallRight;
+
+// -------------------------------------------------------
+// Direction registers
 // 0=Up,1=Down,2=Left,3=Right
 // -------------------------------------------------------
 reg [1:0] currDir; 
+
 function [1:0] opposite;
     input [1:0] dir;
     begin
@@ -124,50 +133,9 @@ function [1:0] opposite;
     end
 endfunction
 
-reg [1:0] nextDir;
-
-// -------------------------------------------------------
-// Intersection logic: choose best next direction
-// -------------------------------------------------------
-always @(*) begin
-    integer bestDist;
-    integer dist;
-    bestDist = 1000;
-    nextDir = currDir; // default keep going straight
-
-    // Up
-    if (!wallUp && opposite(currDir) != 2'b00) begin
-        dist = (pinkyX - targetX)*(pinkyX - targetX) + (pinkyY-1 - targetY)*(pinkyY-1 - targetY);
-        if (dist < bestDist) begin
-            bestDist = dist;
-            nextDir = 2'b00;
-        end
-    end
-    // Down
-    if (!wallDown && opposite(currDir) != 2'b01) begin
-        dist = (pinkyX - targetX)*(pinkyX - targetX) + (pinkyY+1 - targetY)*(pinkyY+1 - targetY);
-        if (dist < bestDist) begin
-            bestDist = dist;
-            nextDir = 2'b01;
-        end
-    end
-    // Left
-    if (!wallLeft && opposite(currDir) != 2'b10) begin
-        dist = (pinkyX-1 - targetX)*(pinkyX-1 - targetX) + (pinkyY - targetY)*(pinkyY - targetY);
-        if (dist < bestDist) begin
-            bestDist = dist;
-            nextDir = 2'b10;
-        end
-    end
-    // Right
-    if (!wallRight && opposite(currDir) != 2'b11) begin
-        dist = (pinkyX+1 - targetX)*(pinkyX+1 - targetX) + (pinkyY - targetY)*(pinkyY - targetY);
-        if (dist < bestDist) begin
-            bestDist = dist;
-            nextDir = 2'b11;
-        end
-    end
-end
+reg [1:0] desiredDir;
+reg [1:0] reverseDir;
+reg       moved;
 
 // -------------------------------------------------------
 // Pinky movement at each tick
@@ -195,14 +163,51 @@ always @(posedge clk or posedge reset) begin
         else if (moveTick) begin
             pinkyAcc <= pinkyAccAfter;
             if (pinkyStep) begin
-                currDir <= nextDir; // update direction
 
-                case(nextDir)
-                    2'b00: pinkyY <= pinkyY - 1;
-                    2'b01: pinkyY <= pinkyY + 1;
-                    2'b10: pinkyX <= pinkyX - 1;
-                    2'b11: pinkyX <= pinkyX + 1;
+                moved = 0;
+
+                // Compute reverse direction
+                case (currDir)
+                    2'b00: reverseDir = 2'b01;
+                    2'b01: reverseDir = 2'b00;
+                    2'b10: reverseDir = 2'b11;
+                    2'b11: reverseDir = 2'b10;
                 endcase
+
+                // Compute desired direction toward target
+                if (targetX > pinkyX)       desiredDir = 2'b11; // right
+                else if (targetX < pinkyX)  desiredDir = 2'b10; // left
+                else if (targetY > pinkyY)  desiredDir = 2'b01; // down
+                else if (targetY < pinkyY)  desiredDir = 2'b00; // up
+                else                          desiredDir = currDir;
+
+                // 1. Try desired direction (not reverse)
+                if (!moved && desiredDir != reverseDir) begin
+                    case (desiredDir)
+                        2'b00: if (canUp)    begin pinkyY <= pinkyY - 1; currDir <= 2'b00; moved = 1; end
+                        2'b01: if (canDown)  begin pinkyY <= pinkyY + 1; currDir <= 2'b01; moved = 1; end
+                        2'b10: if (canLeft)  begin pinkyX <= pinkyX - 1; currDir <= 2'b10; moved = 1; end
+                        2'b11: if (canRight) begin pinkyX <= pinkyX + 1; currDir <= 2'b11; moved = 1; end
+                    endcase
+                end
+
+                // 2. Keep moving forward
+                if (!moved) begin
+                    case (currDir)
+                        2'b00: if (canUp)    begin pinkyY <= pinkyY - 1; moved = 1; end
+                        2'b01: if (canDown)  begin pinkyY <= pinkyY + 1; moved = 1; end
+                        2'b10: if (canLeft)  begin pinkyX <= pinkyX - 1; moved = 1; end
+                        2'b11: if (canRight) begin pinkyX <= pinkyX + 1; moved = 1; end
+                    endcase
+                end
+
+                // 3. Any legal non-reverse direction
+                if (!moved) begin
+                    if (canUp    && reverseDir != 2'b00) begin pinkyY <= pinkyY - 1; currDir <= 2'b00; moved = 1; end
+                    else if (canDown  && reverseDir != 2'b01) begin pinkyY <= pinkyY + 1; currDir <= 2'b01; moved = 1; end
+                    else if (canLeft  && reverseDir != 2'b10) begin pinkyX <= pinkyX - 1; currDir <= 2'b10; moved = 1; end
+                    else if (canRight && reverseDir != 2'b11) begin pinkyX <= pinkyX + 1; currDir <= 2'b11; moved = 1; end
+                end
 
                 startOffsetX <= 0;
                 startOffsetY <= 0;
