@@ -51,6 +51,29 @@ wire forbidDown  = (dir == 2'b00);
 wire forbidLeft  = (dir == 2'b01);
 wire forbidRight = (dir == 2'b11);
 
+// =====================================================================
+// Movement timing (same as Blinky)
+// =====================================================================
+// 60 Hz movement tick
+localparam MOVE_DIV = 416_666;
+reg [19:0] moveCount = 0;
+reg        moveTick  = 0;
+
+always @(posedge clk) begin
+    if (moveCount >= MOVE_DIV) begin
+        moveCount <= 0;
+        moveTick  <= 1;
+    end else begin
+        moveCount <= moveCount + 1;
+        moveTick  <= 0;
+    end
+end
+
+// Fractional speed (~0.15 tiles/frame, same as Blinky)
+reg [15:0] inkyAcc;
+wire [15:0] inkyAccNext = inkyAcc + 16'd150;
+wire inkyStep = (inkyAccNext >= 16'd1000);
+wire [15:0] inkyAccAfter = inkyStep ? (inkyAccNext - 16'd1000) : inkyAccNext;
 
 // =====================================================================
 // 1. Offset 2 tiles ahead of Pac-Man
@@ -134,25 +157,32 @@ always @(posedge clk) begin
         inkyX <= INKY_START_TILE_X;
         inkyY <= INKY_START_TILE_Y;
         dir   <= 2'b01;  // start RIGHT
+        inkyAcc <= 0;
     end else begin
+        // Movement tick (same as Blinky)
+        if (moveTick) begin
+            inkyAcc <= inkyAccAfter;
 
-        // choose best direction
-        if (distUp <= distDown && distUp <= distLeft && distUp <= distRight && distUp != 255)
-            dir <= 2'b00;
-        else if (distDown <= distUp && distDown <= distLeft && distDown <= distRight && distDown != 255)
-            dir <= 2'b10;
-        else if (distLeft <= distUp && distLeft <= distDown && distLeft <= distRight && distLeft != 255)
-            dir <= 2'b11;
-        else if (distRight != 255)
-            dir <= 2'b01;
+            if (inkyStep) begin
+                // choose best direction
+                if (distUp <= distDown && distUp <= distLeft && distUp <= distRight && distUp != 255)
+                    dir <= 2'b00;
+                else if (distDown <= distUp && distDown <= distLeft && distDown <= distRight && distDown != 255)
+                    dir <= 2'b10;
+                else if (distLeft <= distUp && distLeft <= distDown && distLeft <= distRight && distLeft != 255)
+                    dir <= 2'b11;
+                else if (distRight != 255)
+                    dir <= 2'b01;
 
-        // perform movement
-        case(dir)
-            2'b00: if (canMoveUp)    inkyY <= inkyY - 1;
-            2'b10: if (canMoveDown)  inkyY <= inkyY + 1;
-            2'b01: if (canMoveRight) inkyX <= inkyX + 1;
-            2'b11: if (canMoveLeft)  inkyX <= inkyX - 1;
-        endcase
+                // perform movement
+                case(dir)
+                    2'b00: if (canMoveUp)    inkyY <= inkyY - 1;
+                    2'b10: if (canMoveDown)  inkyY <= inkyY + 1;
+                    2'b01: if (canMoveRight) inkyX <= inkyX + 1;
+                    2'b11: if (canMoveLeft)  inkyX <= inkyX - 1;
+                endcase
+            end
+        end
     end
 end
 
