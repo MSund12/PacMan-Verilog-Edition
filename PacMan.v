@@ -27,14 +27,34 @@ module PacMan(
   wire move_left_50mhz = SW[1];
   wire move_right_50mhz = SW[0];
 
-  // Start game signal from SW[9]
+  // Start game signal from SW[9] - use edge detection for proper button press
   reg start_game_level;
+  reg SW9_prev;
+  reg [15:0] start_game_reset_counter;
+  
   always @(posedge CLOCK_50 or negedge rst_n) begin
     if (!rst_n) begin
       start_game_level <= 1'b0;
+      SW9_prev <= 1'b0;
+      start_game_reset_counter <= 16'd0;
     end else begin
-      // Set when SW[9] is pressed, stays set once pressed
-      if (SW[9]) start_game_level <= 1'b1;
+      SW9_prev <= SW[9];
+      
+      // Edge detect: only set on rising edge of SW[9]
+      if (SW[9] && !SW9_prev) begin
+        start_game_level <= 1'b1;
+        start_game_reset_counter <= 16'd0;
+      end else if (start_game_level) begin
+        // Reset after delay to allow pulse to be consumed
+        if (start_game_reset_counter < 16'd10000) begin  // ~200ms at 50MHz
+          start_game_reset_counter <= start_game_reset_counter + 16'd1;
+        end else begin
+          start_game_level <= 1'b0;
+          start_game_reset_counter <= 16'd0;
+        end
+      end else begin
+        start_game_reset_counter <= 16'd0;
+      end
     end
   end
 
@@ -62,6 +82,7 @@ module PacMan(
   // Synchronize start_game signal from CLOCK_50 to pclk domain
   reg start_game_sync_stage1, start_game_sync_stage2;
   wire start_game_sync;
+  wire start_game_pulse;  // One-cycle pulse on start button press (for LED debug)
   
   always @(posedge pclk or negedge rst_n_pll_sync) begin
     if (!rst_n_pll_sync) begin
@@ -74,6 +95,16 @@ module PacMan(
   end
   
   assign start_game_sync = start_game_sync_stage2;
+  // Generate pulse for debug LED (not used for game logic)
+  reg start_game_sync_prev;
+  always @(posedge pclk or negedge rst_n_pll_sync) begin
+    if (!rst_n_pll_sync) begin
+      start_game_sync_prev <= 1'b0;
+    end else begin
+      start_game_sync_prev <= start_game_sync;
+    end
+  end
+  assign start_game_pulse = start_game_sync && !start_game_sync_prev;
 
   wire [9:0] h;
   wire [9:0] v;
@@ -108,14 +139,16 @@ module PacMan(
   assign VGA_B  = b;
 
   // Debug LEDs
-  assign LEDR[0] = hs;
-  assign LEDR[1] = vs;
-  assign LEDR[2] = 1'b0;
-  assign LEDR[3] = h[5];
-  assign LEDR[4] = h[8];
-  assign LEDR[5] = v[5];
-  assign LEDR[6] = v[8];
-  assign LEDR[9:7] = 3'b000;
+  assign LEDR[0] = 1'b0;  // VGA timing signals disabled
+  assign LEDR[1] = 1'b0;
+  assign LEDR[2] = start_game_level;  // Show when start button was pressed
+  assign LEDR[3] = 1'b0;
+  assign LEDR[4] = 1'b0;
+  assign LEDR[5] = 1'b0;
+  assign LEDR[6] = 1'b0;
+  assign LEDR[7] = SW[9];  // Direct SW[9] status for debugging
+  assign LEDR[8] = start_game_pulse;  // Show start pulse
+  assign LEDR[9] = 1'b0;
 
   // Turn off seven-seg displays (DE10-Lite HEX are active-low)
   assign HEX0 = 7'b1111111;
@@ -296,17 +329,33 @@ module vga_core_640x480(
   reg [4:0] current_level;
   reg [15:0] dying_timer;
   
+  // Start game trigger: edge detect start_game input and hold until consumed
+  reg start_game_trigger;
+  reg start_game_prev;
+  
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       game_state <= STATE_ATTRACT;
       current_level <= 5'd1;
       dying_timer <= 16'd0;
+      start_game_trigger <= 1'b0;
+      start_game_prev <= 1'b0;
     end else begin
+      start_game_prev <= start_game;
+      
+      // Detect rising edge of start_game and set trigger
+      if (start_game && !start_game_prev) begin
+        start_game_trigger <= 1'b1;
+      end
+      
       case (game_state)
         STATE_ATTRACT: begin
-          // Wait for start button
-          if (start_game) begin
+          // Wait for start button (level signal that stays high until consumed)
+          if (start_game_trigger) begin
             game_state <= STATE_READY;
+            start_game_trigger <= 1'b0;  // Clear trigger when consumed
+          end else begin
+            game_state <= STATE_ATTRACT;  // Stay in ATTRACT
           end
         end
         
@@ -316,18 +365,18 @@ module vga_core_640x480(
         end
         
         STATE_PLAYING: begin
-          // Check for level completion
+          // Check for level completion (highest priority)
           if (level_complete) begin
             game_state <= STATE_LEVEL_COMPLETE;
-          end
-          // Check for life loss
-          if (lose_life) begin
+          end else if (lose_life) begin
+            // Check for life loss
             game_state <= STATE_DYING;
             dying_timer <= 16'd0;
-          end
-          // Check for game over
-          if (game_over) begin
+          end else if (game_over) begin
+            // Check for game over
             game_state <= STATE_GAME_OVER;
+          end else begin
+            game_state <= STATE_PLAYING;  // Stay in PLAYING
           end
         end
         
@@ -335,6 +384,7 @@ module vga_core_640x480(
           // Dying animation (60 frames = 1 second at 60 FPS)
           if (dying_timer < 16'd60) begin
             dying_timer <= dying_timer + 16'd1;
+            game_state <= STATE_DYING;  // Stay in DYING
           end else begin
             // Check if game over
             if (game_over) begin
@@ -355,10 +405,13 @@ module vga_core_640x480(
         end
         
         STATE_GAME_OVER: begin
-          // Wait for restart (start_game resets everything)
-          if (start_game) begin
+          // Wait for restart (start_game trigger resets everything)
+          if (start_game_trigger) begin
             game_state <= STATE_ATTRACT;
             current_level <= 5'd1;
+            start_game_trigger <= 1'b0;  // Clear trigger when consumed
+          end else begin
+            game_state <= STATE_GAME_OVER;  // Stay in GAME_OVER
           end
         end
         
@@ -403,38 +456,139 @@ module vga_core_640x480(
                              (pac_dir == 2'd3) ? (pac_local_y + step_px_wire) :
                              pac_local_y;
 
-  // Check collision at the front edge of the hitbox AFTER movement
-  // This prevents Pac-Man from entering walls
-  wire [9:0] check_x, check_y;
-  // For left movement: check left edge, clamp to 0 if center is too close to left edge
-  wire [9:0] left_edge_x = (next_pac_local_x >= HIT_RX) ? (next_pac_local_x - HIT_RX) : 10'd0;
-  assign check_x = (pac_dir == 2'd0) ? (next_pac_local_x + HIT_RX) :  // right: check right edge
-                    (pac_dir == 2'd1) ? left_edge_x :                  // left: check left edge (clamped)
-                    next_pac_local_x;                                   // up/down: use center x
-  // For up movement: check top edge, clamp to 0 if center is too close to top edge
-  wire [9:0] top_edge_y = (next_pac_local_y >= HIT_RY_UP) ? (next_pac_local_y - HIT_RY_UP) : 10'd0;
-  assign check_y = (pac_dir == 2'd2) ? top_edge_y :                    // up: check top edge (clamped)
-                    (pac_dir == 2'd3) ? (next_pac_local_y + HIT_RY_DOWN) :  // down: check bottom edge
-                    next_pac_local_y;                                  // left/right: use center y
-
-
-  // Clamp to valid image bounds
-  wire [9:0] check_x_clamped = (check_x > IMG_W-1) ? IMG_W-1 : check_x;
-  wire [9:0] check_y_clamped = (check_y > IMG_H-1) ? IMG_H-1 : check_y;
-
-  // Tile under the front edge of hitbox AFTER movement
-  wire [4:0] pac_tile_x = check_x_clamped[9:3];  // 0..27
-  wire [5:0] pac_tile_y = check_y_clamped[9:3];  // 0..35
-
-  // linear tile index = tile_y*28 + tile_x (28 = 32 - 4)
-  wire [9:0] idx_y             = (pac_tile_y << 5) - (pac_tile_y << 2);
-  wire [9:0] target_tile_index = idx_y + pac_tile_x;
-
-  wire wall_at_target;
-  level_rom ULEVEL (
-    .tile_index(target_tile_index),
-    .is_wall   (wall_at_target)
+  // -------------------------
+  // Pixel-level wall detection
+  // Check multiple points along the hitbox edge in movement direction
+  // Wall pixels have value 4'hC (12 decimal)
+  // Check 1 pixel ahead of the current edge to prevent entering walls
+  // -------------------------
+  // Calculate check points along the hitbox edge, checking 1 pixel ahead in movement direction
+  // For horizontal movement: check top, middle, bottom of hitbox edge
+  // For vertical movement: check left, middle, right of hitbox edge
+  
+  // Check point coordinates (3 points per direction)
+  wire [9:0] check_x_1, check_y_1;  // Point 1 (top/left)
+  wire [9:0] check_x_2, check_y_2;  // Point 2 (middle)
+  wire [9:0] check_x_3, check_y_3;  // Point 3 (bottom/right)
+  
+  // Right movement: check right edge + 1 pixel ahead at top, middle, bottom
+  wire [9:0] right_edge_x = pac_local_x + HIT_RX + 10'd1;  // 1 pixel ahead
+  wire [9:0] right_check_y_top = (pac_local_y >= HIT_RY_UP) ? (pac_local_y - HIT_RY_UP) : 10'd0;
+  wire [9:0] right_check_y_mid = pac_local_y;
+  wire [9:0] right_check_y_bot = pac_local_y + HIT_RY_DOWN;
+  
+  // Left movement: check left edge - 1 pixel ahead at top, middle, bottom
+  wire [9:0] left_edge_x = (pac_local_x >= HIT_RX + 10'd1) ? (pac_local_x - HIT_RX - 10'd1) : 10'd0;
+  
+  // Up movement: check top edge - 1 pixel ahead at left, middle, right
+  wire [9:0] top_edge_y = (pac_local_y >= HIT_RY_UP + 10'd1) ? (pac_local_y - HIT_RY_UP - 10'd1) : 10'd0;
+  wire [9:0] top_check_x_left = (pac_local_x >= HIT_RX) ? (pac_local_x - HIT_RX) : 10'd0;
+  wire [9:0] top_check_x_mid = pac_local_x;
+  wire [9:0] top_check_x_right = pac_local_x + HIT_RX;
+  
+  // Down movement: check bottom edge + 1 pixel ahead at left, middle, right
+  wire [9:0] down_edge_y = pac_local_y + HIT_RY_DOWN + 10'd1;
+  
+  // Select check points based on movement direction
+  assign check_x_1 = (pac_dir == 2'd0) ? right_edge_x :           // right: right edge
+                     (pac_dir == 2'd1) ? left_edge_x :            // left: left edge
+                     (pac_dir == 2'd2) ? top_check_x_left :       // up: left of top edge
+                     top_check_x_left;                            // down: left of bottom edge
+  assign check_y_1 = (pac_dir == 2'd0) ? right_check_y_top :     // right: top of right edge
+                     (pac_dir == 2'd1) ? right_check_y_top :      // left: top of left edge
+                     (pac_dir == 2'd2) ? top_edge_y :             // up: top edge
+                     down_edge_y;                                 // down: bottom edge
+  
+  assign check_x_2 = (pac_dir == 2'd0) ? right_edge_x :          // right: right edge
+                     (pac_dir == 2'd1) ? left_edge_x :            // left: left edge
+                     (pac_dir == 2'd2) ? top_check_x_mid :        // up: middle of top edge
+                     top_check_x_mid;                             // down: middle of bottom edge
+  assign check_y_2 = (pac_dir == 2'd0) ? right_check_y_mid :     // right: middle of right edge
+                     (pac_dir == 2'd1) ? right_check_y_mid :      // left: middle of left edge
+                     (pac_dir == 2'd2) ? top_edge_y :             // up: top edge
+                     down_edge_y;                                 // down: bottom edge
+  
+  assign check_x_3 = (pac_dir == 2'd0) ? right_edge_x :          // right: right edge
+                     (pac_dir == 2'd1) ? left_edge_x :            // left: left edge
+                     (pac_dir == 2'd2) ? top_check_x_right :      // up: right of top edge
+                     top_check_x_right;                           // down: right of bottom edge
+  assign check_y_3 = (pac_dir == 2'd0) ? right_check_y_bot :     // right: bottom of right edge
+                     (pac_dir == 2'd1) ? right_check_y_bot :      // left: bottom of left edge
+                     (pac_dir == 2'd2) ? top_edge_y :             // up: top edge
+                     down_edge_y;                                 // down: bottom edge
+  
+  // Clamp coordinates to valid image bounds
+  wire [9:0] check_x_1_clamped = (check_x_1 > IMG_W-1) ? IMG_W-1 : check_x_1;
+  wire [9:0] check_y_1_clamped = (check_y_1 > IMG_H-1) ? IMG_H-1 : check_y_1;
+  wire [9:0] check_x_2_clamped = (check_x_2 > IMG_W-1) ? IMG_W-1 : check_x_2;
+  wire [9:0] check_y_2_clamped = (check_y_2 > IMG_H-1) ? IMG_H-1 : check_y_2;
+  wire [9:0] check_x_3_clamped = (check_x_3 > IMG_W-1) ? IMG_W-1 : check_x_3;
+  wire [9:0] check_y_3_clamped = (check_y_3 > IMG_H-1) ? IMG_H-1 : check_y_3;
+  
+  // Calculate ROM addresses: addr = (y * 224) + x
+  wire [15:0] addr_y_1 = (check_y_1_clamped << 8) - (check_y_1_clamped << 5);  // y*224
+  wire [15:0] addr_y_2 = (check_y_2_clamped << 8) - (check_y_2_clamped << 5);  // y*224
+  wire [15:0] addr_y_3 = (check_y_3_clamped << 8) - (check_y_3_clamped << 5);  // y*224
+  wire [15:0] wall_check_addr_1 = addr_y_1 + check_x_1_clamped;
+  wire [15:0] wall_check_addr_2 = addr_y_2 + check_x_2_clamped;
+  wire [15:0] wall_check_addr_3 = addr_y_3 + check_x_3_clamped;
+  
+  // Register addresses and direction together to keep them aligned with ROM latency
+  reg [15:0] wall_check_addr_1_d, wall_check_addr_2_d, wall_check_addr_3_d;
+  reg [1:0] pac_dir_d;
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      wall_check_addr_1_d <= 16'd0;
+      wall_check_addr_2_d <= 16'd0;
+      wall_check_addr_3_d <= 16'd0;
+      pac_dir_d <= 2'd1;  // Match initial pac_dir (left)
+    end else begin
+      wall_check_addr_1_d <= wall_check_addr_1;
+      wall_check_addr_2_d <= wall_check_addr_2;
+      wall_check_addr_3_d <= wall_check_addr_3;
+      pac_dir_d <= pac_dir;
+    end
+  end
+  
+  // Access maze ROM to check for wall pixels (value 4'hC)
+  // Use registered addresses that correspond to registered direction
+  wire [3:0] wall_pix_1, wall_pix_2, wall_pix_3;
+  image_rom_224x288_4bpp UWALL_CHECK_1 (
+    .clk(pclk),
+    .addr(wall_check_addr_1_d),
+    .data(wall_pix_1)
   );
+  image_rom_224x288_4bpp UWALL_CHECK_2 (
+    .clk(pclk),
+    .addr(wall_check_addr_2_d),
+    .data(wall_pix_2)
+  );
+  image_rom_224x288_4bpp UWALL_CHECK_3 (
+    .clk(pclk),
+    .addr(wall_check_addr_3_d),
+    .data(wall_pix_3)
+  );
+  
+  // Register ROM outputs (now 2 cycles total latency: address reg + ROM)
+  reg [3:0] wall_pix_1_d, wall_pix_2_d, wall_pix_3_d;
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      wall_pix_1_d <= 4'h0;
+      wall_pix_2_d <= 4'h0;
+      wall_pix_3_d <= 4'h0;
+    end else begin
+      wall_pix_1_d <= wall_pix_1;
+      wall_pix_2_d <= wall_pix_2;
+      wall_pix_3_d <= wall_pix_3;
+    end
+  end
+  
+  // Check if any checked pixel is a wall (4'hC = 12 decimal)
+  // Simplified: Only check leading edge (3 points) since direction changes are synchronized to frame_tick
+  wire wall_pixel_found = (wall_pix_1_d == 4'hC) || (wall_pix_2_d == 4'hC) || (wall_pix_3_d == 4'hC);
+  
+  // Block movement if leading edge hits wall
+  wire wall_detected = wall_pixel_found;
 
   // -------------------------
   // Dot Collection System
@@ -675,6 +829,11 @@ module vga_core_640x480(
   // Track if player has pressed a direction key (to keep pacman still at start)
   reg player_has_moved;
   
+  // Pipeline initialization delay: wait for collision detection pipeline to initialize
+  // Pipeline has 2-3 cycles latency, so wait 4 frame ticks to be safe
+  reg [2:0] pipeline_init_counter;
+  wire pipeline_ready = (pipeline_init_counter >= 3'd4);
+  
   // Movement at ~75.7576 px/s using 125/99 pixels per frame
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
@@ -685,10 +844,21 @@ module vga_core_640x480(
       pac_dir   <= 2'd1;                   // left
       speed_acc <= 8'd0;
       player_has_moved <= 1'b0;
+      pipeline_init_counter <= 3'd0;
     end else begin
       // Reset player_has_moved when game state changes to ATTRACT or READY
       if (game_state == STATE_ATTRACT || game_state == STATE_READY) begin
         player_has_moved <= 1'b0;
+        pipeline_init_counter <= 3'd0;
+      end
+      
+      // Initialize collision detection pipeline when game starts
+      if (game_started && !pipeline_ready) begin
+        if (frame_tick) begin
+          pipeline_init_counter <= pipeline_init_counter + 3'd1;
+        end
+      end else if (!game_started) begin
+        pipeline_init_counter <= 3'd0;
       end
       
       // Check if player pressed a direction key
@@ -696,12 +866,12 @@ module vga_core_640x480(
         player_has_moved <= 1'b1;
       end
       
-      if (frame_tick && game_started && player_has_moved) begin
+      if (frame_tick && game_started && player_has_moved && pipeline_ready) begin
         // Use the pre-calculated step_px_wire for movement
         speed_acc <= tmp_acc_after_second;
 
         // move step_px_wire pixels this frame if path is clear
-        if (step_px_wire != 2'd0 && pac_in_maze && !wall_at_target) begin
+        if (step_px_wire != 2'd0 && pac_in_maze && !wall_detected) begin
           case (pac_dir)
             2'd0: pac_x <= pac_x + step_px_wire;  // right
             2'd1: pac_x <= pac_x - step_px_wire;  // left
@@ -710,12 +880,13 @@ module vga_core_640x480(
           endcase
         end
       end else if (frame_tick && game_started) begin
-        // When game starts but player hasn't moved yet, reset speed accumulator
+        // When game starts but player hasn't moved yet or pipeline not ready, reset speed accumulator
         speed_acc <= 8'd0;
       end
       
       // Direction changes synchronized to frame_tick (only when game started)
-      if (game_started) begin
+      // CRITICAL: Must be synchronized to frame_tick to match collision detection pipeline
+      if (frame_tick && game_started) begin
         if (move_up)
           pac_dir <= 2'd2;   // up
         else if (move_down)
