@@ -492,8 +492,50 @@ module vga_core_640x480(
   wire blinky_pix = in_blinky_box && (blinky_pix_data != 4'h0);
 
   // -------------------------
-  // RGB output with sprite overlay
+  // Unified palette lookup function
+  // Maps 4-bit color index to RGB values
   // -------------------------
+  function [11:0] palette_lookup;
+    input [3:0] color_index;
+    begin
+      case (color_index)
+        4'h0: palette_lookup = {4'h0, 4'h0, 4'h0};      // Black (transparent/background)
+        4'h1: palette_lookup = {4'h8, 4'h0, 4'h0};      // Dark Red
+        4'h2: palette_lookup = {4'h0, 4'h8, 4'h0};      // Dark Green
+        4'h3: palette_lookup = {4'hF, 4'hA, 4'h0};      // Orange (Clyde)
+        4'h4: palette_lookup = {4'h0, 4'h0, 4'h8};      // Dark Blue
+        4'h5: palette_lookup = {4'h8, 4'h0, 4'h8};      // Dark Magenta/Purple
+        4'h6: palette_lookup = {4'h9, 4'h4, 4'h1};      // Brown (pellets/dots)
+        4'h7: palette_lookup = {4'hF, 4'h0, 4'h0};      // Red (Blinky)
+        4'h8: palette_lookup = {4'h8, 4'h8, 4'h8};      // Gray
+        4'h9: palette_lookup = {4'hF, 4'h8, 4'hF};      // Pink (Pinky)
+        4'hA: palette_lookup = {4'h0, 4'hF, 4'h0};      // Green
+        4'hB: palette_lookup = {4'hF, 4'hF, 4'h0};      // Yellow (Pac-Man)
+        4'hC: palette_lookup = {4'h0, 4'h0, 4'hF};      // Blue (walls)
+        4'hD: palette_lookup = {4'hF, 4'h0, 4'hF};      // Magenta
+        4'hE: palette_lookup = {4'h0, 4'hF, 4'hF};      // Cyan
+        4'hF: palette_lookup = {4'hF, 4'hF, 4'hF};      // White (dots)
+        default: palette_lookup = {4'h0, 4'h0, 4'h0};   // Black (fallback)
+      endcase
+    end
+  endfunction
+
+  // -------------------------
+  // RGB output with sprite overlay
+  // Uses unified palette for all sprites and background
+  // -------------------------
+  wire [3:0] final_color_index;
+  wire [11:0] palette_rgb;  // {r, g, b}
+  
+  // Determine which pixel to display (priority: Pac-Man > Blinky > Maze)
+  assign final_color_index = pac_pix ? pac_pix_data :
+                            blinky_pix ? blinky_pix_data :
+                            in_img_area ? pix_data :
+                            4'h0;
+  
+  // Look up RGB from unified palette
+  assign palette_rgb = palette_lookup(final_color_index);
+
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       r <= 4'h0;
@@ -501,50 +543,9 @@ module vga_core_640x480(
       b <= 4'h0;
     end else begin
       if (h_vis && v_vis) begin
-        if (pac_pix) begin
-          // Pac-Man sprite from palette: 0=transparent, 7=yellow
-          case (pac_pix_data)
-            4'h7: begin
-              r <= 4'hF; g <= 4'hF; b <= 4'h0;   // yellow body
-            end
-            default: begin
-              // any other non-zero index: treat as white
-              r <= 4'hF; g <= 4'hF; b <= 4'hF;
-            end
-          endcase
-        end else if (blinky_pix) begin
-          // Blinky sprite from palette: 0=transparent, 7=red
-          case (blinky_pix_data)
-            4'h7: begin
-              r <= 4'hF; g <= 4'h0; b <= 4'h0;   // red body
-            end
-            default: begin
-              // any other non-zero index: treat as white
-              r <= 4'hF; g <= 4'hF; b <= 4'hF;
-            end
-          endcase
-        end else if (in_img_area) begin
-          // Maze from ROM
-          case (pix_data)
-            4'h0: begin
-              r <= 4'h0; g <= 4'h0; b <= 4'h0;      // background
-            end
-            4'hC: begin
-              r <= 4'h0; g <= 4'h0; b <= 4'hF;      // blue walls
-            end
-            4'hF: begin
-              r <= 4'hF; g <= 4'hF; b <= 4'hF;      // white dots
-            end
-            4'h7: begin
-              r <= 4'hF; g <= 4'h0; b <= 4'hF;      // magenta accents
-            end
-            default: begin
-              r <= 4'h0; g <= 4'h0; b <= 4'h0;
-            end
-          endcase
-        end else begin
-          r <= 4'h0; g <= 4'h0; b <= 4'h0;
-        end
+        r <= palette_rgb[11:8];
+        g <= palette_rgb[7:4];
+        b <= palette_rgb[3:0];
       end else begin
         r <= 4'h0; g <= 4'h0; b <= 4'h0;            // blanking
       end
@@ -571,7 +572,8 @@ module image_rom_224x288_4bpp (
 endmodule
 
 
-// Pac-Man sprite: 13x13, 4-bit pixels (0=transparent, 7=yellow) from Pacman.hex
+// Pac-Man sprite: 13x13, 4-bit pixels (0=transparent, uses unified palette) from Pacman.hex
+// NOTE: Current BMP uses index 7 for yellow; should be remapped to index 0xB for unified palette
 module pacman_rom_16x16_4bpp (
     input  wire [7:0] addr,   // 0 .. 168 (13*13-1)
     output reg  [3:0] data
@@ -588,7 +590,8 @@ module pacman_rom_16x16_4bpp (
 endmodule
 
 
-// Blinky sprite: 16x16, 4-bit pixels (0=transparent, 7=red) from Blinky.hex
+// Blinky sprite: 16x16, 4-bit pixels (0=transparent, uses unified palette) from Blinky.hex
+// NOTE: Current BMP uses index 7 for red; matches unified palette index 7
 module blinky_rom_16x16_4bpp (
     input  wire [7:0] addr,   // 0 .. 255
     output reg  [3:0] data
