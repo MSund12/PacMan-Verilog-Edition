@@ -606,24 +606,28 @@ module vga_core_640x480(
   
   // Register ROM outputs (now 2 cycles total latency: address reg + ROM)
   reg [3:0] wall_pix_1_d, wall_pix_2_d, wall_pix_3_d;
+  reg [1:0] pac_dir_d2;  // Register direction again to match ROM output latency
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       wall_pix_1_d <= 4'h0;
       wall_pix_2_d <= 4'h0;
       wall_pix_3_d <= 4'h0;
+      pac_dir_d2 <= 2'd1;  // Match initial pac_dir (left)
     end else begin
       wall_pix_1_d <= wall_pix_1;
       wall_pix_2_d <= wall_pix_2;
       wall_pix_3_d <= wall_pix_3;
+      pac_dir_d2 <= pac_dir_d;  // Track direction that matches these wall checks
     end
   end
   
   // Check if any checked pixel is a wall (4'hC = 12 decimal)
-  // Simplified: Only check leading edge (3 points) since direction changes are synchronized to frame_tick
   wire wall_pixel_found = (wall_pix_1_d == 4'hC) || (wall_pix_2_d == 4'hC) || (wall_pix_3_d == 4'hC);
   
-  // Block movement if leading edge hits wall
-  wire wall_detected = wall_pixel_found;
+  // Block movement if leading edge hits wall AND direction matches
+  // Only use wall detection if the current direction matches the direction used for the wall check
+  // This prevents using stale wall checks after direction changes
+  wire wall_detected = wall_pixel_found && (pac_dir == pac_dir_d2);
 
   // -------------------------
   // Dot Collection System
@@ -1038,7 +1042,6 @@ module vga_core_640x480(
     .wallDown(blinky_wall_down),
     .wallLeft(blinky_wall_left),
     .wallRight(blinky_wall_right),
-    .ghost_speed(ghost_speed),  // Level-based ghost speed percentage
     .blinkyX(blinky_tile_x),
     .blinkyY(blinky_tile_y)
   );

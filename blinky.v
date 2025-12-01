@@ -59,29 +59,15 @@ reg [5:0] targetX;
 reg [5:0] targetY;
 
 // -------------------------------------------------------
-// 5-second start delay (25 MHz clock)
+// 5-second start delay (count frame ticks: 5 seconds * 60 Hz = 300 ticks)
 // -------------------------------------------------------
-localparam FIVE_SEC_TICKS = 25_000_000 * 5;
-reg [27:0] startDelay = 0;
-reg        delayDone  = 0;
+reg [8:0] startDelay = 0;  // 0 to 300 (9 bits)
+reg       delayDone  = 0;
 
 // -------------------------------------------------------
-// 60 Hz movement tick generator
-// 25,000,000 / 60 ≈ 416,666 cycles
+// Use frame_tick input instead of generating our own
+// frame_tick is already synchronized to 60 Hz from PacMan.v
 // -------------------------------------------------------
-localparam MOVE_DIV = 416_666;
-reg [19:0] moveCount = 0;
-reg        moveTick  = 0;
-
-always @(posedge clk) begin
-    if (moveCount >= MOVE_DIV) begin
-        moveCount <= 0;
-        moveTick  <= 1;
-    end else begin
-        moveCount <= moveCount + 1;
-        moveTick  <= 0;
-    end
-end
 
 // -------------------------------------------------------
 // Target selection logic
@@ -113,8 +99,8 @@ wire [15:0] blinkyAccAfter = blinkyStep ? (blinkyAccNext - 16'd1000) : blinkyAcc
 reg [2:0] startOffsetX;
 reg [2:0] startOffsetY;
 
-always @(posedge clk or posedge reset) begin
-    if (reset) begin
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
         blinkyX      <= BLINKY_START_TILE_X;
         blinkyY      <= BLINKY_START_TILE_Y;
         startOffsetX <= BLINKY_OFFSET_X;
@@ -123,15 +109,17 @@ always @(posedge clk or posedge reset) begin
         delayDone    <= 0;
         blinkyAcc    <= 0;
     end else begin
-        // 5-second spawn delay
+        // 5-second spawn delay (count frame ticks: 5 seconds * 60 Hz = 300 ticks)
         if (!delayDone) begin
-            if (startDelay < FIVE_SEC_TICKS)
-                startDelay <= startDelay + 1;
-            else
-                delayDone <= 1;
+            if (frame_tick) begin
+                if (startDelay < 9'd300)
+                    startDelay <= startDelay + 1;
+                else
+                    delayDone <= 1;
+            end
         end
-        // Move at 60 Hz after delay
-        else if (moveTick) begin
+        // Move at 60 Hz after delay, using frame_tick input
+        else if (frame_tick) begin
             blinkyAcc <= blinkyAccAfter;
 
             if (blinkyStep) begin
