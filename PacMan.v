@@ -27,38 +27,7 @@ module PacMan(
   wire move_left_50mhz = SW[1];
   wire move_right_50mhz = SW[0];
 
-  // Start game signal from SW[9] - use edge detection for proper button press
-  reg start_game_level;
-  reg SW9_prev;
-  reg [15:0] start_game_reset_counter;
-  
-  always @(posedge CLOCK_50 or negedge rst_n) begin
-    if (!rst_n) begin
-      start_game_level <= 1'b0;
-      SW9_prev <= 1'b0;
-      start_game_reset_counter <= 16'd0;
-    end else begin
-      SW9_prev <= SW[9];
-      
-      // Edge detect: only set on rising edge of SW[9]
-      if (SW[9] && !SW9_prev) begin
-        start_game_level <= 1'b1;
-        start_game_reset_counter <= 16'd0;
-      end else if (start_game_level) begin
-        // Reset after delay to allow pulse to be consumed
-        if (start_game_reset_counter < 16'd10000) begin  // ~200ms at 50MHz
-          start_game_reset_counter <= start_game_reset_counter + 16'd1;
-        end else begin
-          start_game_level <= 1'b0;
-          start_game_reset_counter <= 16'd0;
-        end
-      end else begin
-        start_game_reset_counter <= 16'd0;
-      end
-    end
-  end
-
-  // Clock domain crossing: synchronize movement signals from CLOCK_50 to pclk
+  // Clock domain crossing: synchronize movement signals and start game from CLOCK_50 to pclk
   // Using 2-stage synchronizer for safe crossing
   wire rst_n_pll_sync = rst_n & pll_locked;
   reg [3:0] move_sync_stage1, move_sync_stage2;
@@ -79,24 +48,25 @@ module PacMan(
   assign move_left_sync = move_sync_stage2[1];
   assign move_right_sync = move_sync_stage2[0];
 
-  // Synchronize start_game signal from CLOCK_50 to pclk domain
+  // Synchronize start_game signal (SW[9]) from CLOCK_50 to pclk domain
   reg start_game_sync_stage1, start_game_sync_stage2;
   wire start_game_sync;
-  wire start_game_pulse;  // One-cycle pulse on start button press (for LED debug)
   
   always @(posedge pclk or negedge rst_n_pll_sync) begin
     if (!rst_n_pll_sync) begin
       start_game_sync_stage1 <= 1'b0;
       start_game_sync_stage2 <= 1'b0;
     end else begin
-      start_game_sync_stage1 <= start_game_level;
+      start_game_sync_stage1 <= SW[9];
       start_game_sync_stage2 <= start_game_sync_stage1;
     end
   end
   
   assign start_game_sync = start_game_sync_stage2;
-  // Generate pulse for debug LED (not used for game logic)
+
+  // Generate pulse for debug LED (one-cycle pulse on start button press)
   reg start_game_sync_prev;
+  wire start_game_pulse;
   always @(posedge pclk or negedge rst_n_pll_sync) begin
     if (!rst_n_pll_sync) begin
       start_game_sync_prev <= 1'b0;
@@ -141,7 +111,7 @@ module PacMan(
   // Debug LEDs
   assign LEDR[0] = 1'b0;  // VGA timing signals disabled
   assign LEDR[1] = 1'b0;
-  assign LEDR[2] = start_game_level;  // Show when start button was pressed
+  assign LEDR[2] = start_game_sync;  // Show synchronized start button status
   assign LEDR[3] = 1'b0;
   assign LEDR[4] = 1'b0;
   assign LEDR[5] = 1'b0;
@@ -200,6 +170,75 @@ module vga_core_640x480(
   localparam SPR_H = 16;
 
   // -------------------------
+  // Helper Functions
+  // -------------------------
+  // Calculate y * 224 for image ROM addressing (224 = 256 - 32 = 2^8 - 2^5)
+  function [15:0] calc_img_addr_y;
+    input [9:0] y;
+    calc_img_addr_y = (y << 8) - (y << 5);  // y * 224
+  endfunction
+
+  // Calculate y * 28 for tile index calculation (28 = 32 - 4 = 2^5 - 2^2)
+  function [9:0] calc_tile_index_y;
+    input [5:0] y;
+    calc_tile_index_y = (y << 5) - (y << 2);  // y * 28
+  endfunction
+
+  // Check if tile coordinates match a power pellet location
+  // Power pellets are at: (1,6), (26,6), (1,26), (26,26)
+  function is_power_pellet_tile;
+    input [4:0] tile_x;
+    input [5:0] tile_y;
+    is_power_pellet_tile = ((tile_x == 5'd1 || tile_x == 5'd26) && 
+                            (tile_y == 6'd6 || tile_y == 6'd26));
+  endfunction
+
+  // Sprite rendering helper functions
+  // Calculate sprite box bounds (top-left corner)
+  function [9:0] calc_sprite_left;
+    input [9:0] sprite_x;
+    input [9:0] sprite_radius;
+    calc_sprite_left = sprite_x - sprite_radius;
+  endfunction
+
+  function [9:0] calc_sprite_top;
+    input [9:0] sprite_y;
+    input [9:0] sprite_radius;
+    calc_sprite_top = sprite_y - sprite_radius;
+  endfunction
+
+  // Calculate sprite-local coordinates and check if in bounds
+  function [3:0] calc_sprite_x;
+    input [9:0] h_coord;
+    input [9:0] sprite_left;
+    // Return lower 4 bits of the difference (Verilog automatically truncates)
+    calc_sprite_x = h_coord - sprite_left;
+  endfunction
+
+  function [3:0] calc_sprite_y;
+    input [9:0] v_coord;
+    input [9:0] sprite_top;
+    // Return lower 4 bits of the difference (Verilog automatically truncates)
+    calc_sprite_y = v_coord - sprite_top;
+  endfunction
+
+  // Check if pixel is within sprite box
+  function is_in_sprite_box;
+    input [9:0] h_coord, v_coord;
+    input [9:0] sprite_left, sprite_top;
+    input [9:0] sprite_w, sprite_h;
+    is_in_sprite_box = (h_coord >= sprite_left) && (v_coord >= sprite_top) &&
+                       ((h_coord - sprite_left) < sprite_w) &&
+                       ((v_coord - sprite_top) < sprite_h);
+  endfunction
+
+  // Calculate sprite ROM address from sprite coordinates
+  function [7:0] calc_sprite_addr;
+    input [3:0] spr_x, spr_y;
+    calc_sprite_addr = (spr_y << 4) | spr_x;  // y*16 + x
+  endfunction
+
+  // -------------------------
   // H/V counters (stage 0)
   // -------------------------
   always @(posedge pclk or negedge rst_n) begin
@@ -234,7 +273,7 @@ module vga_core_640x480(
   wire [8:0] img_x_addr = h - IMG_X0;  // 0..223 when in_img_area_addr
   wire [8:0] img_y_addr = v - IMG_Y0;  // 0..287 when in_img_area_addr
 
-  wire [15:0] addr_y   = (img_y_addr << 8) - (img_y_addr << 5); // y*224
+  wire [15:0] addr_y   = calc_img_addr_y(img_y_addr); // y*224
   wire [15:0] img_addr = in_img_area_addr ? (addr_y + img_x_addr) : 16'd0;
 
   // One-cycle delayed coordinates for display (stage 1)
@@ -271,7 +310,7 @@ module vga_core_640x480(
   wire [9:0] img_y_addr_d = v_d - IMG_Y0;  // 0..287
   wire [4:0] render_tile_x = img_x_addr_d[9:3];  // 0..27
   wire [5:0] render_tile_y = img_y_addr_d[9:3];  // 0..35
-  wire [9:0] render_tile_index = ((render_tile_y << 5) - (render_tile_y << 2)) + render_tile_x;
+  wire [9:0] render_tile_index = calc_tile_index_y(render_tile_y) + render_tile_x;
   
   // Check if tile has a wall (for dot rendering)
   wire render_tile_wall;
@@ -283,13 +322,8 @@ module vga_core_640x480(
   // Dot map provides render_has_dot output for rendering
   wire render_tile_has_dot;
   
-  // Power pellet rendering wires (will reference pellets_collected declared later)
-  // Using literal values matching PELLET_TILE constants
-  wire is_render_pellet_1 = (render_tile_x == 5'd1) && (render_tile_y == 6'd6);
-  wire is_render_pellet_2 = (render_tile_x == 5'd26) && (render_tile_y == 6'd6);
-  wire is_render_pellet_3 = (render_tile_x == 5'd1) && (render_tile_y == 6'd26);
-  wire is_render_pellet_4 = (render_tile_x == 5'd26) && (render_tile_y == 6'd26);
-  wire is_render_pellet_tile = is_render_pellet_1 || is_render_pellet_2 || is_render_pellet_3 || is_render_pellet_4;
+  // Power pellet rendering wire (will reference pellets_collected declared later)
+  wire is_render_pellet_tile = is_power_pellet_tile(render_tile_x, render_tile_y);
 
     // -------------------------
   // Pac-Man position and tile-based collision
@@ -435,15 +469,16 @@ module vga_core_640x480(
 
   // Calculate step_px for this frame (combinational, based on current speed_acc)
   // Scale increment by pacman_speed percentage: scaled_increment = (125 * pacman_speed) / 100
+  // Accumulator can overflow at most twice per frame (when scaled_increment >= 99)
   wire [15:0] scaled_increment = (125 * pacman_speed) / 100;  // 125 * percentage / 100
   wire [7:0] tmp_acc_calc = speed_acc + scaled_increment[7:0];  // Use lower 8 bits (scaled_increment should fit)
-  wire [1:0] step_px_calc;
-  wire [7:0] tmp_acc_after_first;
-  wire [7:0] tmp_acc_after_second;
   
-  assign tmp_acc_after_first = (tmp_acc_calc >= 8'd99) ? (tmp_acc_calc - 8'd99) : tmp_acc_calc;
-  assign step_px_calc = (tmp_acc_calc >= 8'd99) ? 2'd1 : 2'd0;
-  assign tmp_acc_after_second = (tmp_acc_after_first >= 8'd99) ? (tmp_acc_after_first - 8'd99) : tmp_acc_after_first;
+  // Handle first overflow: subtract 99 if >= 99, count 1 step
+  wire [7:0] tmp_acc_after_first = (tmp_acc_calc >= 8'd99) ? (tmp_acc_calc - 8'd99) : tmp_acc_calc;
+  wire [1:0] step_px_calc = (tmp_acc_calc >= 8'd99) ? 2'd1 : 2'd0;
+  
+  // Handle second overflow: subtract 99 again if still >= 99, count another step
+  wire [7:0] tmp_acc_after_second = (tmp_acc_after_first >= 8'd99) ? (tmp_acc_after_first - 8'd99) : tmp_acc_after_first;
   wire [1:0] step_px_wire = step_px_calc + ((tmp_acc_after_first >= 8'd99) ? 2'd1 : 2'd0);
 
   // Calculate where Pac-Man would be after moving step_px_wire pixels
@@ -471,23 +506,23 @@ module vga_core_640x480(
   wire [9:0] check_x_2, check_y_2;  // Point 2 (middle)
   wire [9:0] check_x_3, check_y_3;  // Point 3 (bottom/right)
   
-  // Right movement: check right edge + 1 pixel ahead at top, middle, bottom
-  wire [9:0] right_edge_x = pac_local_x + HIT_RX + 10'd1;  // 1 pixel ahead
+  // Right movement: check right edge + step_px_wire + 1 pixel ahead at top, middle, bottom
+  wire [9:0] right_edge_x = pac_local_x + HIT_RX + step_px_wire + 10'd1;  // step_px_wire + 1 pixel ahead
   wire [9:0] right_check_y_top = (pac_local_y >= HIT_RY_UP) ? (pac_local_y - HIT_RY_UP) : 10'd0;
   wire [9:0] right_check_y_mid = pac_local_y;
   wire [9:0] right_check_y_bot = pac_local_y + HIT_RY_DOWN;
   
-  // Left movement: check left edge - 1 pixel ahead at top, middle, bottom
-  wire [9:0] left_edge_x = (pac_local_x >= HIT_RX + 10'd1) ? (pac_local_x - HIT_RX - 10'd1) : 10'd0;
+  // Left movement: check left edge - step_px_wire - 1 pixel ahead at top, middle, bottom
+  wire [9:0] left_edge_x = (pac_local_x >= HIT_RX + step_px_wire + 10'd1) ? (pac_local_x - HIT_RX - step_px_wire - 10'd1) : 10'd0;
   
-  // Up movement: check top edge - 1 pixel ahead at left, middle, right
-  wire [9:0] top_edge_y = (pac_local_y >= HIT_RY_UP + 10'd1) ? (pac_local_y - HIT_RY_UP - 10'd1) : 10'd0;
+  // Up movement: check top edge - step_px_wire - 1 pixel ahead at left, middle, right
+  wire [9:0] top_edge_y = (pac_local_y >= HIT_RY_UP + step_px_wire + 10'd1) ? (pac_local_y - HIT_RY_UP - step_px_wire - 10'd1) : 10'd0;
   wire [9:0] top_check_x_left = (pac_local_x >= HIT_RX) ? (pac_local_x - HIT_RX) : 10'd0;
   wire [9:0] top_check_x_mid = pac_local_x;
   wire [9:0] top_check_x_right = pac_local_x + HIT_RX;
   
-  // Down movement: check bottom edge + 1 pixel ahead at left, middle, right
-  wire [9:0] down_edge_y = pac_local_y + HIT_RY_DOWN + 10'd1;
+  // Down movement: check bottom edge + step_px_wire + 1 pixel ahead at left, middle, right
+  wire [9:0] down_edge_y = pac_local_y + HIT_RY_DOWN + step_px_wire + 10'd1;
   
   // Select check points based on movement direction
   assign check_x_1 = (pac_dir == 2'd0) ? right_edge_x :           // right: right edge
@@ -526,9 +561,9 @@ module vga_core_640x480(
   wire [9:0] check_y_3_clamped = (check_y_3 > IMG_H-1) ? IMG_H-1 : check_y_3;
   
   // Calculate ROM addresses: addr = (y * 224) + x
-  wire [15:0] addr_y_1 = (check_y_1_clamped << 8) - (check_y_1_clamped << 5);  // y*224
-  wire [15:0] addr_y_2 = (check_y_2_clamped << 8) - (check_y_2_clamped << 5);  // y*224
-  wire [15:0] addr_y_3 = (check_y_3_clamped << 8) - (check_y_3_clamped << 5);  // y*224
+  wire [15:0] addr_y_1 = calc_img_addr_y(check_y_1_clamped);  // y*224
+  wire [15:0] addr_y_2 = calc_img_addr_y(check_y_2_clamped);  // y*224
+  wire [15:0] addr_y_3 = calc_img_addr_y(check_y_3_clamped);  // y*224
   wire [15:0] wall_check_addr_1 = addr_y_1 + check_x_1_clamped;
   wire [15:0] wall_check_addr_2 = addr_y_2 + check_x_2_clamped;
   wire [15:0] wall_check_addr_3 = addr_y_3 + check_x_3_clamped;
@@ -596,7 +631,7 @@ module vga_core_640x480(
   // Pac-Man's current tile (center position)
   wire [4:0] pac_center_tile_x = pac_local_x[9:3];  // 0..27
   wire [5:0] pac_center_tile_y = pac_local_y[9:3];  // 0..35
-  wire [9:0] pac_center_tile_index = ((pac_center_tile_y << 5) - (pac_center_tile_y << 2)) + pac_center_tile_x;
+  wire [9:0] pac_center_tile_index = calc_tile_index_y(pac_center_tile_y) + pac_center_tile_x;
   
   wire pac_center_wall;
   level_rom ULEVEL_PAC_CENTER (
@@ -639,13 +674,14 @@ module vga_core_640x480(
   reg [3:0] pellets_collected;  // One bit per pellet
   
   // Check if current tile is a power pellet location
+  wire is_pellet_tile = is_power_pellet_tile(pac_center_tile_x, pac_center_tile_y);
+  
+  // Check which specific pellet (for collection tracking)
+  // Power pellets are at: (1,6), (26,6), (1,26), (26,26)
   wire is_pellet_tile_1 = (pac_center_tile_x == PELLET_TILE_X_1) && (pac_center_tile_y == PELLET_TILE_Y_1);
   wire is_pellet_tile_2 = (pac_center_tile_x == PELLET_TILE_X_2) && (pac_center_tile_y == PELLET_TILE_Y_1);
   wire is_pellet_tile_3 = (pac_center_tile_x == PELLET_TILE_X_1) && (pac_center_tile_y == PELLET_TILE_Y_2);
   wire is_pellet_tile_4 = (pac_center_tile_x == PELLET_TILE_X_2) && (pac_center_tile_y == PELLET_TILE_Y_2);
-  wire is_pellet_tile = is_pellet_tile_1 || is_pellet_tile_2 || is_pellet_tile_3 || is_pellet_tile_4;
-  
-  // Check which specific pellet (for collection tracking)
   wire pellet_1_active = is_pellet_tile_1 && !pellets_collected[0];
   wire pellet_2_active = is_pellet_tile_2 && !pellets_collected[1];
   wire pellet_3_active = is_pellet_tile_3 && !pellets_collected[2];
@@ -685,6 +721,10 @@ module vga_core_640x480(
   // Fright mode will be triggered by pellet_collected (to be implemented in Phase 2.3)
   
   // Power pellet rendering: check if pellet is collected (declared after pellets_collected)
+  wire is_render_pellet_1 = (render_tile_x == PELLET_TILE_X_1) && (render_tile_y == PELLET_TILE_Y_1);
+  wire is_render_pellet_2 = (render_tile_x == PELLET_TILE_X_2) && (render_tile_y == PELLET_TILE_Y_1);
+  wire is_render_pellet_3 = (render_tile_x == PELLET_TILE_X_1) && (render_tile_y == PELLET_TILE_Y_2);
+  wire is_render_pellet_4 = (render_tile_x == PELLET_TILE_X_2) && (render_tile_y == PELLET_TILE_Y_2);
   wire render_pellet_collected = (is_render_pellet_1 && pellets_collected[0]) ||
                                  (is_render_pellet_2 && pellets_collected[1]) ||
                                  (is_render_pellet_3 && pellets_collected[2]) ||
@@ -914,7 +954,7 @@ module vga_core_640x480(
   wire [9:0] blinky_y = IMG_Y0 + (blinky_tile_y << 3) + 4;  // tile_y*8 + 4 (center)
 
   // Wall detection for blinky's current position (check all 4 directions)
-  wire [9:0] blinky_tile_idx = ((blinky_tile_y << 5) - (blinky_tile_y << 2)) + blinky_tile_x;
+  wire [9:0] blinky_tile_idx = calc_tile_index_y(blinky_tile_y) + blinky_tile_x;
   
   wire blinky_wall_up, blinky_wall_down, blinky_wall_left, blinky_wall_right;
   wire blinky_wall_up_rom, blinky_wall_down_rom, blinky_wall_left_rom, blinky_wall_right_rom;
@@ -1007,19 +1047,14 @@ module vga_core_640x480(
   // Pac-Man sprite (16x16) using Pacman.hex
   // -------------------------
   // top-left of sprite box
-  wire [9:0] pac_left = pac_x - PAC_R;
-  wire [9:0] pac_top  = pac_y - PAC_R;
+  wire [9:0] pac_left = calc_sprite_left(pac_x, PAC_R);
+  wire [9:0] pac_top  = calc_sprite_top(pac_y, PAC_R);
 
   // sprite-local coordinates at this pixel
-  // Check bounds to handle negative values properly
-  wire [9:0] spr_x_full = h_d - pac_left;
-  wire [9:0] spr_y_full = v_d - pac_top;
+  wire [3:0] spr_x = calc_sprite_x(h_d, pac_left);
+  wire [3:0] spr_y = calc_sprite_y(v_d, pac_top);
 
-  wire       in_pac_box = (h_d >= pac_left) && (v_d >= pac_top) && 
-                          (spr_x_full < SPR_W) && (spr_y_full < SPR_H);
-
-  wire [3:0] spr_x = spr_x_full[3:0];  // 0..15
-  wire [3:0] spr_y = spr_y_full[3:0];  // 0..15
+  wire       in_pac_box = is_in_sprite_box(h_d, v_d, pac_left, pac_top, SPR_W, SPR_H);
 
   // Rotate/flip sprite based on direction
   // Right (0): normal, Left (1): horizontal flip, Up (2): 90° CW, Down (3): 90° CCW
@@ -1033,7 +1068,7 @@ module vga_core_640x480(
                          (pac_dir == 2'd2) ? spr_x :                    // up: rotate CW (swapped)
                          (4'd15 - spr_x);                               // down: rotate CCW (swapped)
 
-  wire [7:0] pac_addr = (spr_y_rotated << 4) | spr_x_rotated;  // y*16 + x (rotated)
+  wire [7:0] pac_addr = calc_sprite_addr(spr_x_rotated, spr_y_rotated);  // y*16 + x (rotated)
 
   wire [3:0] pac_pix_data;
   pacman_rom_16x16_4bpp UPAC (
@@ -1058,21 +1093,16 @@ module vga_core_640x480(
   // Blinky sprite (16x16) using Blinky.hex
   // -------------------------
   // top-left of sprite box
-  wire [9:0] blinky_left = blinky_x - PAC_R;
-  wire [9:0] blinky_top  = blinky_y - PAC_R;
+  wire [9:0] blinky_left = calc_sprite_left(blinky_x, PAC_R);
+  wire [9:0] blinky_top  = calc_sprite_top(blinky_y, PAC_R);
 
   // sprite-local coordinates at this pixel
-  // Check bounds to handle negative values properly
-  wire [9:0] blinky_spr_x_full = h_d - blinky_left;
-  wire [9:0] blinky_spr_y_full = v_d - blinky_top;
+  wire [3:0] blinky_spr_x = calc_sprite_x(h_d, blinky_left);
+  wire [3:0] blinky_spr_y = calc_sprite_y(v_d, blinky_top);
 
-  wire       in_blinky_box = (h_d >= blinky_left) && (v_d >= blinky_top) && 
-                              (blinky_spr_x_full < SPR_W) && (blinky_spr_y_full < SPR_H);
+  wire       in_blinky_box = is_in_sprite_box(h_d, v_d, blinky_left, blinky_top, SPR_W, SPR_H);
 
-  wire [3:0] blinky_spr_x = blinky_spr_x_full[3:0];  // 0..15
-  wire [3:0] blinky_spr_y = blinky_spr_y_full[3:0];  // 0..15
-
-  wire [7:0] blinky_addr = (blinky_spr_y << 4) | blinky_spr_x;  // y*16 + x
+  wire [7:0] blinky_addr = calc_sprite_addr(blinky_spr_x, blinky_spr_y);  // y*16 + x
 
   wire [3:0] blinky_pix_data;
   blinky_rom_16x16_4bpp UBLINKY_ROM (
