@@ -19,6 +19,13 @@ module inky(
     output reg [1:0]   dir
 );
 
+// =======================================================
+// Starting tile position (tile-based, like Blinky)
+// =======================================================
+// Inky starting tile: tile X=15, tile Y=17
+localparam [5:0] INKY_START_TILE_X = 6'd11;
+localparam [5:0] INKY_START_TILE_Y = 6'd19;
+
 // =====================================================================
 // Declarations (must be OUTSIDE always blocks)
 // =====================================================================
@@ -124,28 +131,28 @@ end
 // =====================================================================
 always @(posedge clk) begin
     if (reset) begin
-        inkyX <= 6'd13;
-        inkyY <= 6'd17;
+        inkyX <= INKY_START_TILE_X;
+        inkyY <= INKY_START_TILE_Y;
         dir   <= 2'b01;  // start RIGHT
     end else begin
-
+        // Movement disabled - Inky stays at starting position
         // choose best direction
-        if (distUp <= distDown && distUp <= distLeft && distUp <= distRight && distUp != 255)
-            dir <= 2'b00;
-        else if (distDown <= distUp && distDown <= distLeft && distDown <= distRight && distDown != 255)
-            dir <= 2'b10;
-        else if (distLeft <= distUp && distLeft <= distDown && distLeft <= distRight && distLeft != 255)
-            dir <= 2'b11;
-        else if (distRight != 255)
-            dir <= 2'b01;
+        // if (distUp <= distDown && distUp <= distLeft && distUp <= distRight && distUp != 255)
+        //     dir <= 2'b00;
+        // else if (distDown <= distUp && distDown <= distLeft && distDown <= distRight && distDown != 255)
+        //     dir <= 2'b10;
+        // else if (distLeft <= distUp && distLeft <= distDown && distLeft <= distRight && distLeft != 255)
+        //     dir <= 2'b11;
+        // else if (distRight != 255)
+        //     dir <= 2'b01;
 
         // perform movement
-        case(dir)
-            2'b00: if (canMoveUp)    inkyY <= inkyY - 1;
-            2'b10: if (canMoveDown)  inkyY <= inkyY + 1;
-            2'b01: if (canMoveRight) inkyX <= inkyX + 1;
-            2'b11: if (canMoveLeft)  inkyX <= inkyX - 1;
-        endcase
+        // case(dir)
+        //     2'b00: if (canMoveUp)    inkyY <= inkyY - 1;
+        //     2'b10: if (canMoveDown)  inkyY <= inkyY + 1;
+        //     2'b01: if (canMoveRight) inkyX <= inkyX + 1;
+        //     2'b11: if (canMoveLeft)  inkyX <= inkyX - 1;
+        // endcase
     end
 end
 

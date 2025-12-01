@@ -374,9 +374,21 @@ module vga_core_640x480(
   // Blinky position in tile coordinates (from blinky module)
   wire [5:0] blinky_tile_x, blinky_tile_y;
 
-  // Convert blinky tile position to screen coordinates (center of tile)
-  wire [9:0] blinky_x = IMG_X0 + (blinky_tile_x << 3) + 4;  // tile_x*8 + 4 (center)
-  wire [9:0] blinky_y = IMG_Y0 + (blinky_tile_y << 3) + 4;  // tile_y*8 + 4 (center)
+  // Blinky starting position (must match blinky.v)
+  localparam [5:0] BLINKY_START_TILE_X = 6'd13;
+  localparam [5:0] BLINKY_START_TILE_Y = 6'd16;
+  localparam [3:0] BLINKY_START_OFFSET_X = 4'd8;  // 0-7: pixel offset within tile (8 = right edge, between tiles)
+  localparam [3:0] BLINKY_START_OFFSET_Y = 4'd4;  // 4 = center
+
+  // Check if Blinky is at starting position
+  wire blinky_at_start = (blinky_tile_x == BLINKY_START_TILE_X) && (blinky_tile_y == BLINKY_START_TILE_Y);
+
+  // Convert blinky tile position to screen coordinates
+  // Use offset only at starting position, otherwise center of tile
+  wire [3:0] blinky_offset_x = blinky_at_start ? BLINKY_START_OFFSET_X : 4'd4;
+  wire [3:0] blinky_offset_y = blinky_at_start ? BLINKY_START_OFFSET_Y : 4'd4;
+  wire [9:0] blinky_x = IMG_X0 + (blinky_tile_x << 3) + blinky_offset_x;
+  wire [9:0] blinky_y = IMG_Y0 + (blinky_tile_y << 3) + blinky_offset_y;
 
   // Wall detection for blinky's current position (check all 4 directions)
   wire [9:0] blinky_tile_idx = ((blinky_tile_y << 5) - (blinky_tile_y << 2)) + blinky_tile_x;
@@ -443,6 +455,91 @@ module vga_core_640x480(
     .wallRight(blinky_wall_right),
     .blinkyX(blinky_tile_x),
     .blinkyY(blinky_tile_y)
+  );
+
+  // -------------------------
+  // Inky (Cyan Ghost) integration
+  // -------------------------
+  // Inky position in tile coordinates (from inky module)
+  wire [5:0] inky_tile_x, inky_tile_y;
+
+  // Inky starting position (must match inky.v)
+  localparam [5:0] INKY_START_TILE_X = 6'd11;
+  localparam [5:0] INKY_START_TILE_Y = 6'd19;
+  localparam [3:0] INKY_START_OFFSET_X = 4'd8;  // 0-7: pixel offset within tile (8 = right edge, between tiles)
+  localparam [3:0] INKY_START_OFFSET_Y = 4'd4;  // 4 = center
+
+  // Check if Inky is at starting position
+  wire inky_at_start = (inky_tile_x == INKY_START_TILE_X) && (inky_tile_y == INKY_START_TILE_Y);
+
+  // Convert inky tile position to screen coordinates
+  // Use offset only at starting position, otherwise center of tile
+  wire [3:0] inky_offset_x = inky_at_start ? INKY_START_OFFSET_X : 4'd4;
+  wire [3:0] inky_offset_y = inky_at_start ? INKY_START_OFFSET_Y : 4'd4;
+  wire [9:0] inky_x = IMG_X0 + (inky_tile_x << 3) + inky_offset_x;
+  wire [9:0] inky_y = IMG_Y0 + (inky_tile_y << 3) + inky_offset_y;
+
+  // Wall detection for inky's current position (check all 4 directions)
+  wire [9:0] inky_tile_idx = ((inky_tile_y << 5) - (inky_tile_y << 2)) + inky_tile_x;
+  
+  wire inky_wall_up, inky_wall_down, inky_wall_left, inky_wall_right;
+  wire inky_wall_up_rom, inky_wall_down_rom, inky_wall_left_rom, inky_wall_right_rom;
+  
+  // Check walls in adjacent tiles (or treat boundaries as walls)
+  wire [9:0] inky_tile_idx_up    = inky_tile_idx - 10'd28;
+  wire [9:0] inky_tile_idx_down  = inky_tile_idx + 10'd28;
+  wire [9:0] inky_tile_idx_left  = inky_tile_idx - 10'd1;
+  wire [9:0] inky_tile_idx_right = inky_tile_idx + 10'd1;
+
+  level_rom ULEVEL_INKY_UP (
+    .tile_index(inky_tile_idx_up),
+    .is_wall(inky_wall_up_rom)
+  );
+  
+  level_rom ULEVEL_INKY_DOWN (
+    .tile_index(inky_tile_idx_down),
+    .is_wall(inky_wall_down_rom)
+  );
+  
+  level_rom ULEVEL_INKY_LEFT (
+    .tile_index(inky_tile_idx_left),
+    .is_wall(inky_wall_left_rom)
+  );
+  
+  level_rom ULEVEL_INKY_RIGHT (
+    .tile_index(inky_tile_idx_right),
+    .is_wall(inky_wall_right_rom)
+  );
+
+  // Treat boundaries as walls
+  assign inky_wall_up    = (inky_tile_y == 0) ? 1'b1 : inky_wall_up_rom;
+  assign inky_wall_down  = (inky_tile_y == 35) ? 1'b1 : inky_wall_down_rom;
+  assign inky_wall_left  = (inky_tile_x == 0) ? 1'b1 : inky_wall_left_rom;
+  assign inky_wall_right = (inky_tile_x == 27) ? 1'b1 : inky_wall_right_rom;
+
+  // Convert pac_dir to Inky's format: 00=UP, 01=RIGHT, 10=DOWN, 11=LEFT
+  // Pac-Man uses: 0=right, 1=left, 2=up, 3=down
+  wire [1:0] pac_dir_inky_format = (pac_dir == 2'd2) ? 2'b00 :  // up
+                                    (pac_dir == 2'd0) ? 2'b01 :  // right
+                                    (pac_dir == 2'd3) ? 2'b10 :  // down
+                                    2'b11;                       // left
+
+  // Instantiate inky module (tile-based)
+  inky UINKY (
+    .clk(pclk),
+    .reset(!rst_n),   // inky expects active-high reset
+    .pacX(pacman_tile_x),
+    .pacY(pacman_tile_y),
+    .pacDir(pac_dir_inky_format),
+    .blinkyX(blinky_tile_x),
+    .blinkyY(blinky_tile_y),
+    .canMoveUp(!inky_wall_up),
+    .canMoveRight(!inky_wall_right),
+    .canMoveDown(!inky_wall_down),
+    .canMoveLeft(!inky_wall_left),
+    .inkyX(inky_tile_x),
+    .inkyY(inky_tile_y),
+    .dir()  // direction output not used for rendering
   );
 
   // -------------------------
@@ -521,6 +618,33 @@ module vga_core_640x480(
   wire blinky_pix = in_blinky_box && (blinky_pix_data != 4'h0);
 
   // -------------------------
+  // Inky sprite (16x16) using Inky.hex
+  // -------------------------
+  // top-left of sprite box
+  wire [9:0] inky_left = inky_x - GHOST_R;
+  wire [9:0] inky_top  = inky_y - GHOST_R;
+
+  // sprite-local coordinates at this pixel
+  wire [9:0] inky_spr_x_full = h_d - inky_left;
+  wire [9:0] inky_spr_y_full = v_d - inky_top;
+
+  wire       in_inky_box = (inky_spr_x_full < GHOST_W) && (inky_spr_y_full < GHOST_H);
+
+  wire [3:0] inky_spr_x = inky_spr_x_full[3:0];  // 0..15
+  wire [3:0] inky_spr_y = inky_spr_y_full[3:0];  // 0..15
+
+  wire [7:0] inky_addr = (inky_spr_y << 4) | inky_spr_x;  // y*16 + x
+
+  wire [3:0] inky_pix_data;
+  inky_rom_16x16_4bpp UINKY_ROM (
+    .addr(inky_addr),
+    .data(inky_pix_data)
+  );
+
+  // Inky pixel is "active" when inside box and sprite index != 0 (0 = transparent)
+  wire inky_pix = in_inky_box && (inky_pix_data != 4'h0);
+
+  // -------------------------
   // Unified palette lookup function
   // Maps 4-bit color index to RGB values
   // -------------------------
@@ -542,7 +666,7 @@ module vga_core_640x480(
         4'hB: palette_lookup = {4'hF, 4'hF, 4'h0};      // Yellow (Pac-Man)
         4'hC: palette_lookup = {4'h0, 4'h0, 4'hF};      // Blue (walls)
         4'hD: palette_lookup = {4'hF, 4'h0, 4'hF};      // Magenta
-        4'hE: palette_lookup = {4'h0, 4'hF, 4'hF};      // Cyan
+        4'hE: palette_lookup = {4'h0, 4'hF, 4'hF};      // Cyan (Inky)
         4'hF: palette_lookup = {4'hF, 4'hF, 4'hF};      // White
         default: palette_lookup = {4'h0, 4'h0, 4'h0};   // Black (fallback)
       endcase
@@ -556,9 +680,10 @@ module vga_core_640x480(
   wire [3:0] final_color_index;
   wire [11:0] palette_rgb;  // {r, g, b}
   
-  // Determine which pixel to display (priority: Pac-Man > Blinky > Dots > Maze)
+  // Determine which pixel to display (priority: Pac-Man > Blinky > Inky > Dots > Maze)
   assign final_color_index = pac_pix ? pac_pix_data :
                             blinky_pix ? blinky_pix_data :
+                            inky_pix ? inky_pix_data :
                             dot_pixel ? 4'h6 :  // Brown dot
                             in_img_area ? pix_data :
                             4'h0;
@@ -630,6 +755,24 @@ module blinky_rom_16x16_4bpp (
 
     initial begin
         $readmemh("Blinky.hex", mem);
+    end
+
+    always @* begin
+        data = mem[addr];
+    end
+endmodule
+
+
+// Inky sprite: 16x16, 4-bit pixels (0=transparent, uses unified palette) from Inky.hex
+// NOTE: Current BMP uses index 0xE for cyan; matches unified palette index 0xE
+module inky_rom_16x16_4bpp (
+    input  wire [7:0] addr,   // 0 .. 255
+    output reg  [3:0] data
+);
+    reg [3:0] mem [0:256-1];
+
+    initial begin
+        $readmemh("Inky.hex", mem);
     end
 
     always @* begin
