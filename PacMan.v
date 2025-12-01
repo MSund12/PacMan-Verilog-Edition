@@ -106,9 +106,9 @@ module vga_core_640x480(
   localparam TILES_Y  = 36;   // 288/8 = 36
 
   // Pac-Man sprite parameters
-  localparam PAC_R = 8;        // 16x16 sprite radius
-  localparam SPR_W = 16;
-  localparam SPR_H = 16;
+  localparam PAC_R = 6;        // 13x13 sprite radius
+  localparam SPR_W = 13;
+  localparam SPR_H = 13;
 
   // -------------------------
   // H/V counters (stage 0)
@@ -180,13 +180,13 @@ module vga_core_640x480(
     // -------------------------
   // Pac-Man position and tile-based collision
   // -------------------------
-  // Pac-Man collision hitbox (15 wide × 15 tall)
-  localparam HIT_W  = 15;
-  localparam HIT_H  = 15;
+  // Pac-Man collision hitbox (13 wide × 13 tall)
+  localparam HIT_W  = 13;
+  localparam HIT_H  = 13;
 
-  // Hitbox radius: ±7 pixels from center
-  localparam HIT_RX = 7;
-  localparam HIT_RY = 7;
+  // Hitbox radius: ±6 pixels from center
+  localparam HIT_RX = 6;
+  localparam HIT_RY = 6;
 
 
   reg [9:0] pac_x, pac_y;     // center position (screen coords) - CENTER OF TILE anchor
@@ -379,7 +379,7 @@ module vga_core_640x480(
   );
 
   // -------------------------
-  // Pac-Man sprite (16x16) using Pacman.hex
+  // Pac-Man sprite (13x13) using Pacman.hex
   // -------------------------
   // top-left of sprite box (sprite is centered on pac_x,pac_y)
   wire [9:0] pac_left = pac_x - PAC_R;
@@ -391,10 +391,11 @@ module vga_core_640x480(
 
   wire       in_pac_box = (spr_x_full < SPR_W) && (spr_y_full < SPR_H);
 
-  wire [3:0] spr_x = spr_x_full[3:0];  // 0..15
-  wire [3:0] spr_y = spr_y_full[3:0];  // 0..15
+  wire [3:0] spr_x = spr_x_full[3:0];  // 0..12
+  wire [3:0] spr_y = spr_y_full[3:0];  // 0..12
 
-  wire [7:0] pac_addr = (spr_y << 4) | spr_x;  // y*16 + x
+  // Address calculation: y*13 + x = y*8 + y*4 + y + x
+  wire [7:0] pac_addr = ((spr_y << 3) + (spr_y << 2) + spr_y + spr_x);  // y*13 + x
 
   wire [3:0] pac_pix_data;
   pacman_rom_16x16_4bpp UPAC (
@@ -512,12 +513,12 @@ module image_rom_224x288_4bpp (
 endmodule
 
 
-// Pac-Man sprite: 16x16, 4-bit pixels (0=transparent, 7=yellow) from Pacman.hex
+// Pac-Man sprite: 13x13, 4-bit pixels (0=transparent, 7=yellow) from Pacman.hex
 module pacman_rom_16x16_4bpp (
-    input  wire [7:0] addr,   // 0 .. 255
+    input  wire [7:0] addr,   // 0 .. 168 (13*13-1)
     output reg  [3:0] data
 );
-    reg [3:0] mem [0:256-1];
+    reg [3:0] mem [0:169-1];
 
     initial begin
         $readmemh("Pacman.hex", mem);
