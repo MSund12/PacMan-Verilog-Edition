@@ -430,8 +430,27 @@ module vga_core_640x480(
   wire       in_pac_box = (spr_x_full < SPR_W) && (spr_y_full < SPR_H);
 
   // Clamp sprite coordinates to valid range (0-12) to prevent out-of-bounds ROM access
-  wire [3:0] spr_x = (spr_x_full >= SPR_W) ? 4'd12 : spr_x_full[3:0];  // 0..12
-  wire [3:0] spr_y = (spr_y_full >= SPR_H) ? 4'd12 : spr_y_full[3:0];  // 0..12
+  wire [3:0] spr_x_raw = (spr_x_full >= SPR_W) ? 4'd12 : spr_x_full[3:0];  // 0..12
+  wire [3:0] spr_y_raw = (spr_y_full >= SPR_H) ? 4'd12 : spr_y_full[3:0];  // 0..12
+
+  // Transform sprite coordinates based on direction
+  // Assuming sprite ROM stores Pacman facing right (mouth open to the right)
+  // pac_dir: 0=right, 1=left, 2=up, 3=down
+  wire [3:0] spr_x, spr_y;
+  
+  // 0° for right: no change
+  // 180° for left: (x,y) -> (12-x, 12-y)
+  // 90° CW for up: (x,y) -> (12-y, x)
+  // 90° CCW for down: (x,y) -> (y, 12-x)
+  assign spr_x = (pac_dir == 2'd0) ? spr_x_raw :                    // right: no change
+                 (pac_dir == 2'd1) ? (4'd12 - spr_x_raw) :          // left: 180° rotation (x' = 12-x)
+                 (pac_dir == 2'd2) ? (4'd12 - spr_y_raw) :          // up: rotate 90° CW (x' = 12-y)
+                 spr_y_raw;                                         // down: rotate 90° CCW (x' = y)
+                 
+  assign spr_y = (pac_dir == 2'd0) ? spr_y_raw :                    // right: no change
+                 (pac_dir == 2'd1) ? (4'd12 - spr_y_raw) :          // left: 180° rotation (y' = 12-y)
+                 (pac_dir == 2'd2) ? spr_x_raw :                    // up: rotate 90° CW (y' = x)
+                 (4'd12 - spr_x_raw);                               // down: rotate 90° CCW (y' = 12-x)
 
   // Address calculation: y*13 + x = y*8 + y*4 + y + x
   wire [7:0] pac_addr = ((spr_y << 3) + (spr_y << 2) + spr_y + spr_x);  // y*13 + x
