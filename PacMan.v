@@ -273,34 +273,60 @@ module vga_core_640x480(
                            pac_local_y;  // left/right: no change
 
   // Calculate check positions at front edge of hitbox for 1px and 2px ahead
-  // For horizontal movement: check left/right edge; for vertical: check top/bottom edge
-  wire [9:0] check_x_1px, check_y_1px;
-  wire [9:0] check_x_2px, check_y_2px;
+  // Check multiple points across hitbox to prevent slipping through gaps
+  // For horizontal movement: check top and bottom edges
+  // For vertical movement: check left and right edges
+  wire [9:0] check_x_1px_top, check_y_1px_top;
+  wire [9:0] check_x_1px_bot, check_y_1px_bot;
+  wire [9:0] check_x_2px_top, check_y_2px_top;
+  wire [9:0] check_x_2px_bot, check_y_2px_bot;
   
-  assign check_x_1px = (pac_dir == 2'd0) ? (pac_local_x_1px + HIT_RX) :  // right: check right edge
-                        (pac_dir == 2'd1) ? ((pac_local_x_1px >= HIT_RX) ? (pac_local_x_1px - HIT_RX) : 10'd0) :  // left: check left edge
-                        pac_local_x_1px;  // up/down: use center x
-  assign check_y_1px = (pac_dir == 2'd2) ? ((pac_local_y_1px >= HIT_RY) ? (pac_local_y_1px - HIT_RY) : 10'd0) :  // up: check top edge
-                        (pac_dir == 2'd3) ? (pac_local_y_1px + HIT_RY) :  // down: check bottom edge
-                        pac_local_y_1px;  // left/right: use center y
-                        
-  assign check_x_2px = (pac_dir == 2'd0) ? (pac_local_x_2px + HIT_RX) :  // right: check right edge
-                        (pac_dir == 2'd1) ? ((pac_local_x_2px >= HIT_RX) ? (pac_local_x_2px - HIT_RX) : 10'd0) :  // left: check left edge
-                        pac_local_x_2px;  // up/down: use center x
-  assign check_y_2px = (pac_dir == 2'd2) ? ((pac_local_y_2px >= HIT_RY) ? (pac_local_y_2px - HIT_RY) : 10'd0) :  // up: check top edge
-                        (pac_dir == 2'd3) ? (pac_local_y_2px + HIT_RY) :  // down: check bottom edge
-                        pac_local_y_2px;  // left/right: use center y
+  // For horizontal movement (left/right): check top and bottom edges of hitbox
+  // For vertical movement (up/down): check left and right edges of hitbox
+  assign check_x_1px_top = (pac_dir == 2'd0) ? (pac_local_x_1px + HIT_RX) :  // right: check right edge
+                           (pac_dir == 2'd1) ? ((pac_local_x_1px >= HIT_RX) ? (pac_local_x_1px - HIT_RX) : 10'd0) :  // left: check left edge
+                           ((pac_local_x_1px >= HIT_RX) ? (pac_local_x_1px - HIT_RX) : 10'd0);  // up/down: check left edge
+  assign check_y_1px_top = (pac_dir == 2'd2) ? ((pac_local_y_1px >= HIT_RY) ? (pac_local_y_1px - HIT_RY) : 10'd0) :  // up: check top edge
+                           (pac_dir == 2'd3) ? (pac_local_y_1px + HIT_RY) :  // down: check bottom edge
+                           ((pac_local_y_1px >= HIT_RY) ? (pac_local_y_1px - HIT_RY) : 10'd0);  // left/right: check top edge
+                           
+  assign check_x_1px_bot = (pac_dir == 2'd0) ? (pac_local_x_1px + HIT_RX) :  // right: check right edge
+                           (pac_dir == 2'd1) ? ((pac_local_x_1px >= HIT_RX) ? (pac_local_x_1px - HIT_RX) : 10'd0) :  // left: check left edge
+                           (pac_local_x_1px + HIT_RX);  // up/down: check right edge
+  assign check_y_1px_bot = (pac_dir == 2'd2) ? ((pac_local_y_1px >= HIT_RY) ? (pac_local_y_1px - HIT_RY) : 10'd0) :  // up: check top edge
+                           (pac_dir == 2'd3) ? (pac_local_y_1px + HIT_RY) :  // down: check bottom edge
+                           (pac_local_y_1px + HIT_RY);  // left/right: check bottom edge
+                           
+  assign check_x_2px_top = (pac_dir == 2'd0) ? (pac_local_x_2px + HIT_RX) :  // right: check right edge
+                           (pac_dir == 2'd1) ? ((pac_local_x_2px >= HIT_RX) ? (pac_local_x_2px - HIT_RX) : 10'd0) :  // left: check left edge
+                           ((pac_local_x_2px >= HIT_RX) ? (pac_local_x_2px - HIT_RX) : 10'd0);  // up/down: check left edge
+  assign check_y_2px_top = (pac_dir == 2'd2) ? ((pac_local_y_2px >= HIT_RY) ? (pac_local_y_2px - HIT_RY) : 10'd0) :  // up: check top edge
+                           (pac_dir == 2'd3) ? (pac_local_y_2px + HIT_RY) :  // down: check bottom edge
+                           ((pac_local_y_2px >= HIT_RY) ? (pac_local_y_2px - HIT_RY) : 10'd0);  // left/right: check top edge
+                           
+  assign check_x_2px_bot = (pac_dir == 2'd0) ? (pac_local_x_2px + HIT_RX) :  // right: check right edge
+                           (pac_dir == 2'd1) ? ((pac_local_x_2px >= HIT_RX) ? (pac_local_x_2px - HIT_RX) : 10'd0) :  // left: check left edge
+                           (pac_local_x_2px + HIT_RX);  // up/down: check right edge
+  assign check_y_2px_bot = (pac_dir == 2'd2) ? ((pac_local_y_2px >= HIT_RY) ? (pac_local_y_2px - HIT_RY) : 10'd0) :  // up: check top edge
+                           (pac_dir == 2'd3) ? (pac_local_y_2px + HIT_RY) :  // down: check bottom edge
+                           (pac_local_y_2px + HIT_RY);  // left/right: check bottom edge
 
   // Clamp to valid image bounds
-  wire [9:0] check_x_1px_clamped = (check_x_1px > IMG_W-1) ? IMG_W-1 : check_x_1px;
-  wire [9:0] check_y_1px_clamped = (check_y_1px > IMG_H-1) ? IMG_H-1 : check_y_1px;
-  wire [9:0] check_x_2px_clamped = (check_x_2px > IMG_W-1) ? IMG_W-1 : check_x_2px;
-  wire [9:0] check_y_2px_clamped = (check_y_2px > IMG_H-1) ? IMG_H-1 : check_y_2px;
+  wire [9:0] check_x_1px_top_clamped = (check_x_1px_top > IMG_W-1) ? IMG_W-1 : check_x_1px_top;
+  wire [9:0] check_y_1px_top_clamped = (check_y_1px_top > IMG_H-1) ? IMG_H-1 : check_y_1px_top;
+  wire [9:0] check_x_1px_bot_clamped = (check_x_1px_bot > IMG_W-1) ? IMG_W-1 : check_x_1px_bot;
+  wire [9:0] check_y_1px_bot_clamped = (check_y_1px_bot > IMG_H-1) ? IMG_H-1 : check_y_1px_bot;
+  wire [9:0] check_x_2px_top_clamped = (check_x_2px_top > IMG_W-1) ? IMG_W-1 : check_x_2px_top;
+  wire [9:0] check_y_2px_top_clamped = (check_y_2px_top > IMG_H-1) ? IMG_H-1 : check_y_2px_top;
+  wire [9:0] check_x_2px_bot_clamped = (check_x_2px_bot > IMG_W-1) ? IMG_W-1 : check_x_2px_bot;
+  wire [9:0] check_y_2px_bot_clamped = (check_y_2px_bot > IMG_H-1) ? IMG_H-1 : check_y_2px_bot;
 
   // Calculate ROM addresses for pixel checks
   // Address = y * 224 + x = (y << 8) - (y << 5) + x
-  wire [15:0] wall_addr_1px = ((check_y_1px_clamped << 8) - (check_y_1px_clamped << 5)) + check_x_1px_clamped;
-  wire [15:0] wall_addr_2px = ((check_y_2px_clamped << 8) - (check_y_2px_clamped << 5)) + check_x_2px_clamped;
+  wire [15:0] wall_addr_1px_top = ((check_y_1px_top_clamped << 8) - (check_y_1px_top_clamped << 5)) + check_x_1px_top_clamped;
+  wire [15:0] wall_addr_1px_bot = ((check_y_1px_bot_clamped << 8) - (check_y_1px_bot_clamped << 5)) + check_x_1px_bot_clamped;
+  wire [15:0] wall_addr_2px_top = ((check_y_2px_top_clamped << 8) - (check_y_2px_top_clamped << 5)) + check_x_2px_top_clamped;
+  wire [15:0] wall_addr_2px_bot = ((check_y_2px_bot_clamped << 8) - (check_y_2px_bot_clamped << 5)) + check_x_2px_bot_clamped;
 
   // Read pixel values from image ROM (wall pixels = 0xC = 4'hC)
   // ROM has 1-cycle latency (output is registered), so these values correspond
@@ -309,22 +335,33 @@ module vga_core_640x480(
   // 2. We're checking positions ahead of current position (1px and 2px)
   // 3. Pac-Man moves slowly (1-2 pixels per frame at 60Hz)
   // The slight delay ensures we don't skip over 1-pixel-wide walls
-  wire [3:0] wall_pix_1px, wall_pix_2px;
-  image_rom_224x288_4bpp UWALL_1PX (
+  wire [3:0] wall_pix_1px_top, wall_pix_1px_bot;
+  wire [3:0] wall_pix_2px_top, wall_pix_2px_bot;
+  image_rom_224x288_4bpp UWALL_1PX_TOP (
     .clk (pclk),
-    .addr(wall_addr_1px),
-    .data(wall_pix_1px)
+    .addr(wall_addr_1px_top),
+    .data(wall_pix_1px_top)
   );
-  image_rom_224x288_4bpp UWALL_2PX (
+  image_rom_224x288_4bpp UWALL_1PX_BOT (
     .clk (pclk),
-    .addr(wall_addr_2px),
-    .data(wall_pix_2px)
+    .addr(wall_addr_1px_bot),
+    .data(wall_pix_1px_bot)
+  );
+  image_rom_224x288_4bpp UWALL_2PX_TOP (
+    .clk (pclk),
+    .addr(wall_addr_2px_top),
+    .data(wall_pix_2px_top)
+  );
+  image_rom_224x288_4bpp UWALL_2PX_BOT (
+    .clk (pclk),
+    .addr(wall_addr_2px_bot),
+    .data(wall_pix_2px_bot)
   );
 
-  // Collision detected if any checked pixel is a wall (0xC)
-  // Check 1px position if moving at least 1px, check 2px position if moving 2px
-  wire wall_at_1px = (wall_pix_1px == 4'hC);
-  wire wall_at_2px = (wall_pix_2px == 4'hC);
+  // Collision detected if ANY checked pixel is a wall (0xC)
+  // Check both top and bottom/left and right edges to prevent slipping through gaps
+  wire wall_at_1px = (wall_pix_1px_top == 4'hC) || (wall_pix_1px_bot == 4'hC);
+  wire wall_at_2px = (wall_pix_2px_top == 4'hC) || (wall_pix_2px_bot == 4'hC);
   wire wall_at_target = (step_px_wire >= 2'd1 && wall_at_1px) || 
                         (step_px_wire >= 2'd2 && wall_at_2px);
 
