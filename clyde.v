@@ -36,21 +36,11 @@ wire [15:0] distCircSq = cdx*cdx + cdy*cdy;
 wire pacNearCircle = (distCircSq < 16'd64);   // < 8 tiles
 
 // =======================================================
-// Spawn pixel → tile conversion
+// Starting tile position (tile-based, like Blinky)
 // =======================================================
-localparam IMG_X0 = 208;
-localparam IMG_Y0 = 96;
-localparam TILE_W = 8;
-localparam TILE_H = 8;
-
-localparam CLYDE_START_X_PIX = IMG_X0 + 13*TILE_W + 4 + 3;
-localparam CLYDE_START_Y_PIX = IMG_Y0 + 17*TILE_H + 4 + 9;
-
-localparam [5:0] CLYDE_START_TILE_X = (CLYDE_START_X_PIX - IMG_X0) / TILE_W;
-localparam [5:0] CLYDE_START_TILE_Y = (CLYDE_START_Y_PIX - IMG_Y0) / TILE_H;
-
-localparam [2:0] CLYDE_OFFSET_X = (CLYDE_START_X_PIX - IMG_X0) % TILE_W;
-localparam [2:0] CLYDE_OFFSET_Y = (CLYDE_START_Y_PIX - IMG_Y0) % TILE_H;
+// Clyde starting tile: tile X=12, tile Y=16
+localparam [5:0] CLYDE_START_TILE_X = 6'd12;
+localparam [5:0] CLYDE_START_TILE_Y = 6'd16;
 
 // =======================================================
 // Target registers
@@ -151,8 +141,8 @@ always @(posedge clk or posedge reset) begin
     if (reset) begin
         clydeX      <= CLYDE_START_TILE_X;
         clydeY      <= CLYDE_START_TILE_Y;
-        startOffsetX <= CLYDE_OFFSET_X;
-        startOffsetY <= CLYDE_OFFSET_Y;
+        startOffsetX <= 0;
+        startOffsetY <= 0;
 
         startDelay   <= 0;
         delayDone    <= 0;
