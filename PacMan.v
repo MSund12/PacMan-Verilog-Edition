@@ -643,9 +643,9 @@ module vga_core_640x480(
   // Convert pac_dir to Pinky's format: 00=Up, 01=Down, 10=Left, 11=Right
   // Pac-Man uses: 0=right, 1=left, 2=up, 3=down
   wire [1:0] pac_dir_pinky_format = (pac_dir == 2'd2) ? 2'b00 :  // up
-                                     (pac_dir == 2'd3) ? 2'b01 :  // down
-                                     (pac_dir == 2'd1) ? 2'b10 :  // left
-                                     2'b11;                       // right
+                                    (pac_dir == 2'd3) ? 2'b01 :  // down
+                                    (pac_dir == 2'd1) ? 2'b10 :  // left
+                                    2'b11;                       // right
 
   // Instantiate pinky module (tile-based)
   pinky UPINKY (
@@ -662,6 +662,82 @@ module vga_core_640x480(
     .wallRight(pinky_wall_right),
     .pinkyX(pinky_tile_x),
     .pinkyY(pinky_tile_y)
+  );
+
+  // -------------------------
+  // Clyde (Orange Ghost) integration
+  // -------------------------
+  // Clyde position in tile coordinates (from clyde module)
+  wire [5:0] clyde_tile_x, clyde_tile_y;
+
+  // Clyde starting position (must match clyde.v)
+  localparam [5:0] CLYDE_START_TILE_X = 6'd12;
+  localparam [5:0] CLYDE_START_TILE_Y = 6'd16;
+  localparam [3:0] CLYDE_START_OFFSET_X = 4'd8;  // 0-7: pixel offset within tile (8 = right edge, between tiles)
+  localparam [3:0] CLYDE_START_OFFSET_Y = 4'd4;  // 4 = center
+
+  // Check if Clyde is at starting position
+  wire clyde_at_start = (clyde_tile_x == CLYDE_START_TILE_X) && (clyde_tile_y == CLYDE_START_TILE_Y);
+
+  // Convert clyde tile position to screen coordinates
+  // Use offset only at starting position, otherwise center of tile
+  wire [3:0] clyde_offset_x = clyde_at_start ? CLYDE_START_OFFSET_X : 4'd4;
+  wire [3:0] clyde_offset_y = clyde_at_start ? CLYDE_START_OFFSET_Y : 4'd4;
+  wire [9:0] clyde_x = IMG_X0 + (clyde_tile_x << 3) + clyde_offset_x;
+  wire [9:0] clyde_y = IMG_Y0 + (clyde_tile_y << 3) + clyde_offset_y;
+
+  // Wall detection for clyde's current position (check all 4 directions)
+  wire [9:0] clyde_tile_idx = ((clyde_tile_y << 5) - (clyde_tile_y << 2)) + clyde_tile_x;
+  
+  wire clyde_wall_up, clyde_wall_down, clyde_wall_left, clyde_wall_right;
+  wire clyde_wall_up_rom, clyde_wall_down_rom, clyde_wall_left_rom, clyde_wall_right_rom;
+  
+  // Check walls in adjacent tiles (or treat boundaries as walls)
+  wire [9:0] clyde_tile_idx_up    = clyde_tile_idx - 10'd28;
+  wire [9:0] clyde_tile_idx_down  = clyde_tile_idx + 10'd28;
+  wire [9:0] clyde_tile_idx_left  = clyde_tile_idx - 10'd1;
+  wire [9:0] clyde_tile_idx_right = clyde_tile_idx + 10'd1;
+
+  level_rom ULEVEL_CLYDE_UP (
+    .tile_index(clyde_tile_idx_up),
+    .is_wall(clyde_wall_up_rom)
+  );
+  
+  level_rom ULEVEL_CLYDE_DOWN (
+    .tile_index(clyde_tile_idx_down),
+    .is_wall(clyde_wall_down_rom)
+  );
+  
+  level_rom ULEVEL_CLYDE_LEFT (
+    .tile_index(clyde_tile_idx_left),
+    .is_wall(clyde_wall_left_rom)
+  );
+  
+  level_rom ULEVEL_CLYDE_RIGHT (
+    .tile_index(clyde_tile_idx_right),
+    .is_wall(clyde_wall_right_rom)
+  );
+
+  // Treat boundaries as walls
+  assign clyde_wall_up    = (clyde_tile_y == 0) ? 1'b1 : clyde_wall_up_rom;
+  assign clyde_wall_down  = (clyde_tile_y == 35) ? 1'b1 : clyde_wall_down_rom;
+  assign clyde_wall_left  = (clyde_tile_x == 0) ? 1'b1 : clyde_wall_left_rom;
+  assign clyde_wall_right = (clyde_tile_x == 27) ? 1'b1 : clyde_wall_right_rom;
+
+  // Instantiate clyde module (tile-based)
+  clyde UCLYDE (
+    .clk(pclk),
+    .reset(!rst_n),   // clyde expects active-high reset
+    .pacmanX(pacman_tile_x),
+    .pacmanY(pacman_tile_y),
+    .isChase(isChase),
+    .isScatter(isScatter),
+    .wallUp(clyde_wall_up),
+    .wallDown(clyde_wall_down),
+    .wallLeft(clyde_wall_left),
+    .wallRight(clyde_wall_right),
+    .clydeX(clyde_tile_x),
+    .clydeY(clyde_tile_y)
   );
 
   // -------------------------
@@ -794,6 +870,33 @@ module vga_core_640x480(
   wire pinky_pix = in_pinky_box && (pinky_pix_data != 4'h0);
 
   // -------------------------
+  // Clyde sprite (16x16) using Clyde.hex
+  // -------------------------
+  // top-left of sprite box
+  wire [9:0] clyde_left = clyde_x - GHOST_R;
+  wire [9:0] clyde_top  = clyde_y - GHOST_R;
+
+  // sprite-local coordinates at this pixel
+  wire [9:0] clyde_spr_x_full = h_d - clyde_left;
+  wire [9:0] clyde_spr_y_full = v_d - clyde_top;
+
+  wire       in_clyde_box = (clyde_spr_x_full < GHOST_W) && (clyde_spr_y_full < GHOST_H);
+
+  wire [3:0] clyde_spr_x = clyde_spr_x_full[3:0];  // 0..15
+  wire [3:0] clyde_spr_y = clyde_spr_y_full[3:0];  // 0..15
+
+  wire [7:0] clyde_addr = (clyde_spr_y << 4) | clyde_spr_x;  // y*16 + x
+
+  wire [3:0] clyde_pix_data;
+  clyde_rom_16x16_4bpp UCLYDE_ROM (
+    .addr(clyde_addr),
+    .data(clyde_pix_data)
+  );
+
+  // Clyde pixel is "active" when inside box and sprite index != 0 (0 = transparent)
+  wire clyde_pix = in_clyde_box && (clyde_pix_data != 4'h0);
+
+  // -------------------------
   // Unified palette lookup function
   // Maps 4-bit color index to RGB values
   // -------------------------
@@ -829,11 +932,12 @@ module vga_core_640x480(
   wire [3:0] final_color_index;
   wire [11:0] palette_rgb;  // {r, g, b}
   
-  // Determine which pixel to display (priority: Pac-Man > Blinky > Inky > Pinky > Dots > Maze)
+  // Determine which pixel to display (priority: Pac-Man > Blinky > Inky > Pinky > Clyde > Dots > Maze)
   assign final_color_index = pac_pix ? pac_pix_data :
                             blinky_pix ? blinky_pix_data :
                             inky_pix ? inky_pix_data :
                             pinky_pix ? pinky_pix_data :
+                            clyde_pix ? clyde_pix_data :
                             dot_pixel ? 4'h6 :  // Brown dot
                             in_img_area ? pix_data :
                             4'h0;
@@ -941,6 +1045,24 @@ module pinky_rom_16x16_4bpp (
 
     initial begin
         $readmemh("Pinky.hex", mem);
+    end
+
+    always @* begin
+        data = mem[addr];
+    end
+endmodule
+
+
+// Clyde sprite: 16x16, 4-bit pixels (0=transparent, uses unified palette) from Clyde.hex
+// NOTE: Current BMP uses index 0x3 for orange; matches unified palette index 0x3
+module clyde_rom_16x16_4bpp (
+    input  wire [7:0] addr,   // 0 .. 255
+    output reg  [3:0] data
+);
+    reg [3:0] mem [0:256-1];
+
+    initial begin
+        $readmemh("Clyde.hex", mem);
     end
 
     always @* begin
