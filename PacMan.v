@@ -580,6 +580,91 @@ module vga_core_640x480(
   );
 
   // -------------------------
+  // Pinky (Pink Ghost) integration
+  // -------------------------
+  // Pinky position in tile coordinates (from pinky module)
+  wire [5:0] pinky_tile_x, pinky_tile_y;
+
+  // Pinky starting position (must match pinky.v)
+  // From pinky.v calculations: tile X=13, tile Y=16 (calculated from pixel position)
+  localparam [5:0] PINKY_START_TILE_X = 6'd13;
+  localparam [5:0] PINKY_START_TILE_Y = 6'd16;
+  localparam [3:0] PINKY_START_OFFSET_X = 4'd7;  // 0-7: pixel offset within tile
+  localparam [3:0] PINKY_START_OFFSET_Y = 4'd7;  // 0-7: pixel offset within tile
+
+  // Check if Pinky is at starting position
+  wire pinky_at_start = (pinky_tile_x == PINKY_START_TILE_X) && (pinky_tile_y == PINKY_START_TILE_Y);
+
+  // Convert pinky tile position to screen coordinates
+  // Use offset only at starting position, otherwise center of tile
+  wire [3:0] pinky_offset_x = pinky_at_start ? PINKY_START_OFFSET_X : 4'd4;
+  wire [3:0] pinky_offset_y = pinky_at_start ? PINKY_START_OFFSET_Y : 4'd4;
+  wire [9:0] pinky_x = IMG_X0 + (pinky_tile_x << 3) + pinky_offset_x;
+  wire [9:0] pinky_y = IMG_Y0 + (pinky_tile_y << 3) + pinky_offset_y;
+
+  // Wall detection for pinky's current position (check all 4 directions)
+  wire [9:0] pinky_tile_idx = ((pinky_tile_y << 5) - (pinky_tile_y << 2)) + pinky_tile_x;
+  
+  wire pinky_wall_up, pinky_wall_down, pinky_wall_left, pinky_wall_right;
+  wire pinky_wall_up_rom, pinky_wall_down_rom, pinky_wall_left_rom, pinky_wall_right_rom;
+  
+  // Check walls in adjacent tiles (or treat boundaries as walls)
+  wire [9:0] pinky_tile_idx_up    = pinky_tile_idx - 10'd28;
+  wire [9:0] pinky_tile_idx_down  = pinky_tile_idx + 10'd28;
+  wire [9:0] pinky_tile_idx_left  = pinky_tile_idx - 10'd1;
+  wire [9:0] pinky_tile_idx_right = pinky_tile_idx + 10'd1;
+
+  level_rom ULEVEL_PINKY_UP (
+    .tile_index(pinky_tile_idx_up),
+    .is_wall(pinky_wall_up_rom)
+  );
+  
+  level_rom ULEVEL_PINKY_DOWN (
+    .tile_index(pinky_tile_idx_down),
+    .is_wall(pinky_wall_down_rom)
+  );
+  
+  level_rom ULEVEL_PINKY_LEFT (
+    .tile_index(pinky_tile_idx_left),
+    .is_wall(pinky_wall_left_rom)
+  );
+  
+  level_rom ULEVEL_PINKY_RIGHT (
+    .tile_index(pinky_tile_idx_right),
+    .is_wall(pinky_wall_right_rom)
+  );
+
+  // Treat boundaries as walls
+  assign pinky_wall_up    = (pinky_tile_y == 0) ? 1'b1 : pinky_wall_up_rom;
+  assign pinky_wall_down  = (pinky_tile_y == 35) ? 1'b1 : pinky_wall_down_rom;
+  assign pinky_wall_left  = (pinky_tile_x == 0) ? 1'b1 : pinky_wall_left_rom;
+  assign pinky_wall_right = (pinky_tile_x == 27) ? 1'b1 : pinky_wall_right_rom;
+
+  // Convert pac_dir to Pinky's format: 00=Up, 01=Down, 10=Left, 11=Right
+  // Pac-Man uses: 0=right, 1=left, 2=up, 3=down
+  wire [1:0] pac_dir_pinky_format = (pac_dir == 2'd2) ? 2'b00 :  // up
+                                     (pac_dir == 2'd3) ? 2'b01 :  // down
+                                     (pac_dir == 2'd1) ? 2'b10 :  // left
+                                     2'b11;                       // right
+
+  // Instantiate pinky module (tile-based)
+  pinky UPINKY (
+    .clk(pclk),
+    .reset(!rst_n),   // pinky expects active-high reset
+    .pacmanX(pacman_tile_x),
+    .pacmanY(pacman_tile_y),
+    .pacmanDir(pac_dir_pinky_format),
+    .isChase(isChase),
+    .isScatter(isScatter),
+    .wallUp(pinky_wall_up),
+    .wallDown(pinky_wall_down),
+    .wallLeft(pinky_wall_left),
+    .wallRight(pinky_wall_right),
+    .pinkyX(pinky_tile_x),
+    .pinkyY(pinky_tile_y)
+  );
+
+  // -------------------------
   // Pac-Man sprite (13x13) using Pacman.hex
   // -------------------------
   // top-left of sprite box (sprite is centered on pac_x,pac_y)
@@ -682,6 +767,33 @@ module vga_core_640x480(
   wire inky_pix = in_inky_box && (inky_pix_data != 4'h0);
 
   // -------------------------
+  // Pinky sprite (16x16) using Pinky.hex
+  // -------------------------
+  // top-left of sprite box
+  wire [9:0] pinky_left = pinky_x - GHOST_R;
+  wire [9:0] pinky_top  = pinky_y - GHOST_R;
+
+  // sprite-local coordinates at this pixel
+  wire [9:0] pinky_spr_x_full = h_d - pinky_left;
+  wire [9:0] pinky_spr_y_full = v_d - pinky_top;
+
+  wire       in_pinky_box = (pinky_spr_x_full < GHOST_W) && (pinky_spr_y_full < GHOST_H);
+
+  wire [3:0] pinky_spr_x = pinky_spr_x_full[3:0];  // 0..15
+  wire [3:0] pinky_spr_y = pinky_spr_y_full[3:0];  // 0..15
+
+  wire [7:0] pinky_addr = (pinky_spr_y << 4) | pinky_spr_x;  // y*16 + x
+
+  wire [3:0] pinky_pix_data;
+  pinky_rom_16x16_4bpp UPINKY_ROM (
+    .addr(pinky_addr),
+    .data(pinky_pix_data)
+  );
+
+  // Pinky pixel is "active" when inside box and sprite index != 0 (0 = transparent)
+  wire pinky_pix = in_pinky_box && (pinky_pix_data != 4'h0);
+
+  // -------------------------
   // Unified palette lookup function
   // Maps 4-bit color index to RGB values
   // -------------------------
@@ -717,10 +829,11 @@ module vga_core_640x480(
   wire [3:0] final_color_index;
   wire [11:0] palette_rgb;  // {r, g, b}
   
-  // Determine which pixel to display (priority: Pac-Man > Blinky > Inky > Dots > Maze)
+  // Determine which pixel to display (priority: Pac-Man > Blinky > Inky > Pinky > Dots > Maze)
   assign final_color_index = pac_pix ? pac_pix_data :
                             blinky_pix ? blinky_pix_data :
                             inky_pix ? inky_pix_data :
+                            pinky_pix ? pinky_pix_data :
                             dot_pixel ? 4'h6 :  // Brown dot
                             in_img_area ? pix_data :
                             4'h0;
@@ -810,6 +923,24 @@ module inky_rom_16x16_4bpp (
 
     initial begin
         $readmemh("Inky.hex", mem);
+    end
+
+    always @* begin
+        data = mem[addr];
+    end
+endmodule
+
+
+// Pinky sprite: 16x16, 4-bit pixels (0=transparent, uses unified palette) from Pinky.hex
+// NOTE: Current BMP uses index 0x9 for pink; matches unified palette index 0x9
+module pinky_rom_16x16_4bpp (
+    input  wire [7:0] addr,   // 0 .. 255
+    output reg  [3:0] data
+);
+    reg [3:0] mem [0:256-1];
+
+    initial begin
+        $readmemh("Pinky.hex", mem);
     end
 
     always @* begin
