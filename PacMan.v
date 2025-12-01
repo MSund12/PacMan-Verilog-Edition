@@ -174,6 +174,35 @@ module vga_core_640x480(
         (h_d >= IMG_X0) && (h_d < IMG_X0 + IMG_W) &&
         (v_d >= IMG_Y0) && (v_d < IMG_Y0 + IMG_H);
 
+  // Delayed image coordinates for display stage (aligned with pix_data)
+  wire [8:0] img_x_addr_d = h_d - IMG_X0;  // 0..223 when in_img_area
+  wire [8:0] img_y_addr_d = v_d - IMG_Y0;  // 0..287 when in_img_area
+
+  // Tile coordinates for dot lookup
+  wire [4:0] tile_x = img_x_addr_d[7:3];  // 0..27 (divide by 8)
+  wire [5:0] tile_y = img_y_addr_d[8:3];  // 0..35 (divide by 8) - FIX: use [8:3] not [7:3] for 9-bit value
+  // Use the same optimization pattern as blinky_tile_idx: tile_y*28 = (tile_y << 5) - (tile_y << 2)
+  wire [9:0] tile_index_dot_raw = ((tile_y << 5) - (tile_y << 2)) + tile_x;  // tile_y*28 + tile_x
+  wire [9:0] tile_index_dot = (tile_index_dot_raw > 10'd1007) ? 10'd1007 : tile_index_dot_raw;  // Clamp to valid range
+  
+  // Dot ROM lookup
+  wire tile_has_dot;
+  dots_rom UDOTS (
+    .tile_index(tile_index_dot),
+    .has_dot(tile_has_dot)
+  );
+  
+  // Check if current pixel is in center of tile (for dot rendering)
+  // Dots are typically 2x2 pixels in center of 8x8 tile
+  wire [2:0] pix_in_tile_x = img_x_addr_d[2:0];  // 0..7 within tile
+  wire [2:0] pix_in_tile_y = img_y_addr_d[2:0];  // 0..7 within tile
+  wire in_dot_area = (pix_in_tile_x >= 3) && (pix_in_tile_x <= 4) &&
+                     (pix_in_tile_y >= 3) && (pix_in_tile_y <= 4);
+  
+  // Dot pixel (brown, index 0x6)
+  wire dot_pixel = tile_has_dot && in_dot_area && in_img_area;
+  
+
   // Maze ROM: 4-bit pixels, 1-cycle latency
   wire [3:0] pix_data;
   image_rom_224x288_4bpp UIMG (
@@ -527,9 +556,10 @@ module vga_core_640x480(
   wire [3:0] final_color_index;
   wire [11:0] palette_rgb;  // {r, g, b}
   
-  // Determine which pixel to display (priority: Pac-Man > Blinky > Maze)
+  // Determine which pixel to display (priority: Pac-Man > Blinky > Dots > Maze)
   assign final_color_index = pac_pix ? pac_pix_data :
                             blinky_pix ? blinky_pix_data :
+                            dot_pixel ? 4'h6 :  // Brown dot
                             in_img_area ? pix_data :
                             4'h0;
   
@@ -627,4 +657,26 @@ module level_rom (
     end
 
     assign is_wall = bits[tile_index];
+endmodule
+
+
+// 28 x 36 = 1008 tiles, 1 bit per tile: 0=no dot, 1=dot present
+module dots_rom (
+    input  wire [9:0] tile_index,   // 0..1007 (y*28 + x)
+    output wire       has_dot
+);
+    // Memory: 1008 entries, 1 bit each
+    reg bits [0:1007];
+
+    integer i;
+    initial begin
+        // Initialize to 0 in case file is missing/short
+        for (i = 0; i < 1008; i = i + 1)
+            bits[i] = 1'b0;
+
+        // Load 0/1 values from file: one bit per line
+        $readmemb("dots_map.bin", bits);
+    end
+
+    assign has_dot = bits[tile_index];
 endmodule
