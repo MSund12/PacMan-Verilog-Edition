@@ -179,8 +179,6 @@ set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to UART_RX
 
 set_global_assignment -name POWER_PRESET_COOLING_SOLUTION "23 MM HEAT SINK WITH 200 LFPM AIRFLOW"
 set_global_assignment -name POWER_BOARD_THERMAL_MODEL "NONE (CONSERVATIVE)"
-set_global_assignment -name VERILOG_FILE score_manager.v
-set_global_assignment -name VERILOG_FILE dot_map.v
 set_global_assignment -name VERILOG_FILE levelSpecs.v
 set_global_assignment -name VERILOG_FILE blinky.v
 set_global_assignment -name VERILOG_FILE PacMan.v
