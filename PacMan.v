@@ -346,7 +346,7 @@ module vga_core_640x480(
   wire [5:0] blinky_tile_x, blinky_tile_y;
 
   // Convert blinky tile position to screen coordinates (center of tile)
-  wire [9:0] blinky_x = IMG_X0 + (blinky_tile_x << 3) + 4 + 4;  // tile_x*8 + 4 (center)
+  wire [9:0] blinky_x = IMG_X0 + (blinky_tile_x << 3) + 4;  // tile_x*8 + 4 (center)
   wire [9:0] blinky_y = IMG_Y0 + (blinky_tile_y << 3) + 4;  // tile_y*8 + 4 (center)
 
   // Wall detection for blinky's current position (check all 4 directions)
