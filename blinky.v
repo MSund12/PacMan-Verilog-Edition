@@ -1,7 +1,6 @@
 module blinky(
     input  wire        clk,
-    input  wire        rst_n,       // active-low reset
-    input  wire        frame_tick,  // Move once per frame
+    input  wire        reset,
 
     input  wire [5:0]  pacmanX,   // pacman tile X (0..27)
     input  wire [5:0]  pacmanY,   // pacman tile Y (0..35)
@@ -9,7 +8,7 @@ module blinky(
     input  wire        isChase,
     input  wire        isScatter,
 
-    // Now tile-based wall indicators, already provided by Pac-Man code
+    // Tile-based wall indicators
     input  wire        wallUp,
     input  wire        wallDown,
     input  wire        wallLeft,
@@ -32,24 +31,11 @@ localparam [5:0] CORNER_X = 27;
 localparam [5:0] CORNER_Y = 0;
 
 // -------------------------------------------------------
-// Pixel-based starting position
-// Arcade spawn: center of tile + vertical adjustment
-localparam IMG_X0 = 208;
-localparam IMG_Y0 = 96;
-localparam TILE_W = 8;
-localparam TILE_H = 8;
-
-// Add 9 pixels downward to Y
-localparam BLINKY_START_X_PIX = IMG_X0 + 13*TILE_W + 4 + 3;  // X=13 center
-localparam BLINKY_START_Y_PIX = IMG_Y0 + 14*TILE_H + 4 + 19;  // Y=14 center + 9 pixels down
-
-// Convert pixel to tile for initial position
-localparam [5:0] BLINKY_START_TILE_X = (BLINKY_START_X_PIX - IMG_X0) / TILE_W;
-localparam [5:0] BLINKY_START_TILE_Y = (BLINKY_START_Y_PIX - IMG_Y0) / TILE_H;
-
-// Pixel offset inside tile
-localparam [2:0] BLINKY_OFFSET_X = (BLINKY_START_X_PIX - IMG_X0) % TILE_W;
-localparam [2:0] BLINKY_OFFSET_Y = (BLINKY_START_Y_PIX - IMG_Y0) % TILE_H;
+// Starting tile position (tile-based, like Pac-Man)
+// -------------------------------------------------------
+// Blinky starting tile: tile X=13, tile Y=16
+localparam [5:0] BLINKY_START_TILE_X = 6'd13;
+localparam [5:0] BLINKY_START_TILE_Y = 6'd16;
 
 
 // -------------------------------------------------------
@@ -59,9 +45,29 @@ reg [5:0] targetX;
 reg [5:0] targetY;
 
 // -------------------------------------------------------
-// Use frame_tick input instead of generating our own
-// frame_tick is already synchronized to 60 Hz from PacMan.v
+// 5-second start delay (25 MHz clock)
 // -------------------------------------------------------
+localparam FIVE_SEC_TICKS = 25_000_000 * 5;
+reg [27:0] startDelay = 0;
+reg        delayDone  = 0;
+
+// -------------------------------------------------------
+// 60 Hz movement tick generator
+// 25,000,000 / 60 ≈ 416,666 cycles
+// -------------------------------------------------------
+localparam MOVE_DIV = 416_666;
+reg [19:0] moveCount = 0;
+reg        moveTick  = 0;
+
+always @(posedge clk) begin
+    if (moveCount >= MOVE_DIV) begin
+        moveCount <= 0;
+        moveTick  <= 1;
+    end else begin
+        moveCount <= moveCount + 1;
+        moveTick  <= 0;
+    end
+end
 
 // -------------------------------------------------------
 // Target selection logic
@@ -93,16 +99,23 @@ wire [15:0] blinkyAccAfter = blinkyStep ? (blinkyAccNext - 16'd1000) : blinkyAcc
 reg [2:0] startOffsetX;
 reg [2:0] startOffsetY;
 
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
+always @(posedge clk or posedge reset) begin
+    if (reset) begin
         blinkyX      <= BLINKY_START_TILE_X;
         blinkyY      <= BLINKY_START_TILE_Y;
-        startOffsetX <= BLINKY_OFFSET_X;
-        startOffsetY <= BLINKY_OFFSET_Y;
+        startDelay   <= 0;
+        delayDone    <= 0;
         blinkyAcc    <= 0;
     end else begin
-        // Move immediately when frame_tick is active (no delay)
-        if (frame_tick) begin
+        // 5-second spawn delay
+        if (!delayDone) begin
+            if (startDelay < FIVE_SEC_TICKS)
+                startDelay <= startDelay + 1;
+            else
+                delayDone <= 1;
+        end
+        // Move at 60 Hz after delay
+        else if (moveTick) begin
             blinkyAcc <= blinkyAccAfter;
 
             if (blinkyStep) begin
