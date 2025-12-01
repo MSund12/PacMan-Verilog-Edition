@@ -135,24 +135,24 @@ always @(posedge clk) begin
         inkyY <= INKY_START_TILE_Y;
         dir   <= 2'b01;  // start RIGHT
     end else begin
-        // Movement disabled - Inky stays at starting position
+
         // choose best direction
-        // if (distUp <= distDown && distUp <= distLeft && distUp <= distRight && distUp != 255)
-        //     dir <= 2'b00;
-        // else if (distDown <= distUp && distDown <= distLeft && distDown <= distRight && distDown != 255)
-        //     dir <= 2'b10;
-        // else if (distLeft <= distUp && distLeft <= distDown && distLeft <= distRight && distLeft != 255)
-        //     dir <= 2'b11;
-        // else if (distRight != 255)
-        //     dir <= 2'b01;
+        if (distUp <= distDown && distUp <= distLeft && distUp <= distRight && distUp != 255)
+            dir <= 2'b00;
+        else if (distDown <= distUp && distDown <= distLeft && distDown <= distRight && distDown != 255)
+            dir <= 2'b10;
+        else if (distLeft <= distUp && distLeft <= distDown && distLeft <= distRight && distLeft != 255)
+            dir <= 2'b11;
+        else if (distRight != 255)
+            dir <= 2'b01;
 
         // perform movement
-        // case(dir)
-        //     2'b00: if (canMoveUp)    inkyY <= inkyY - 1;
-        //     2'b10: if (canMoveDown)  inkyY <= inkyY + 1;
-        //     2'b01: if (canMoveRight) inkyX <= inkyX + 1;
-        //     2'b11: if (canMoveLeft)  inkyX <= inkyX - 1;
-        // endcase
+        case(dir)
+            2'b00: if (canMoveUp)    inkyY <= inkyY - 1;
+            2'b10: if (canMoveDown)  inkyY <= inkyY + 1;
+            2'b01: if (canMoveRight) inkyX <= inkyX + 1;
+            2'b11: if (canMoveLeft)  inkyX <= inkyX - 1;
+        endcase
     end
 end
 
