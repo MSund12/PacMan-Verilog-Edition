@@ -222,16 +222,6 @@ module vga_core_640x480(
   assign tmp_acc_after_second = (tmp_acc_after_first >= 8'd99) ? (tmp_acc_after_first - 8'd99) : tmp_acc_after_first;
   wire [1:0] step_px_wire = step_px_calc + ((tmp_acc_after_first >= 8'd99) ? 2'd1 : 2'd0);
 
-  // Calculate where Pac-Man would be after moving step_px_wire pixels
-  // This is used for collision detection before actually moving
-  wire [9:0] next_pac_local_x, next_pac_local_y;
-  assign next_pac_local_x = (pac_dir == 2'd0) ? (pac_local_x + step_px_wire) :
-                             (pac_dir == 2'd1) ? (pac_local_x - step_px_wire) :
-                             pac_local_x;
-  assign next_pac_local_y = (pac_dir == 2'd2) ? (pac_local_y - step_px_wire) :
-                             (pac_dir == 2'd3) ? (pac_local_y + step_px_wire) :
-                             pac_local_y;
-
   // Pixel-based collision detection: check all pixels along movement path
   // This prevents Pac-Man from skipping over 1-pixel-wide walls
   
@@ -284,6 +274,12 @@ module vga_core_640x480(
   wire [15:0] wall_addr_2px = ((check_y_2px_clamped << 8) - (check_y_2px_clamped << 5)) + check_x_2px_clamped;
 
   // Read pixel values from image ROM (wall pixels = 0xC = 4'hC)
+  // ROM has 1-cycle latency (output is registered), so these values correspond
+  // to addresses from the previous cycle. This is acceptable because:
+  // 1. Addresses update every cycle based on current position
+  // 2. We're checking positions ahead of current position (1px and 2px)
+  // 3. Pac-Man moves slowly (1-2 pixels per frame at 60Hz)
+  // The slight delay ensures we don't skip over 1-pixel-wide walls
   wire [3:0] wall_pix_1px, wall_pix_2px;
   image_rom_224x288_4bpp UWALL_1PX (
     .clk (pclk),
@@ -296,17 +292,10 @@ module vga_core_640x480(
     .data(wall_pix_2px)
   );
 
-  // Register pixel values to handle ROM latency (1 cycle)
-  reg [3:0] wall_pix_1px_reg, wall_pix_2px_reg;
-  always @(posedge pclk) begin
-    wall_pix_1px_reg <= wall_pix_1px;
-    wall_pix_2px_reg <= wall_pix_2px;
-  end
-
   // Collision detected if any checked pixel is a wall (0xC)
   // Check 1px position if moving at least 1px, check 2px position if moving 2px
-  wire wall_at_1px = (wall_pix_1px_reg == 4'hC);
-  wire wall_at_2px = (wall_pix_2px_reg == 4'hC);
+  wire wall_at_1px = (wall_pix_1px == 4'hC);
+  wire wall_at_2px = (wall_pix_2px == 4'hC);
   wire wall_at_target = (step_px_wire >= 2'd1 && wall_at_1px) || 
                         (step_px_wire >= 2'd2 && wall_at_2px);
 
