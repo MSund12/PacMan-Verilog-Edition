@@ -1,7 +1,7 @@
 module PacMan(
   input  wire CLOCK_50,
   input  wire KEY0,
-  input  wire [9:0] SW,        // Onboard switches
+  input  wire [9:0] SW,        // NEW: onboard switches
 
   output wire [9:0] LEDR,
   output wire [6:0] HEX0, HEX1,
