@@ -1,6 +1,7 @@
 module blinky(
     input  wire        clk,
-    input  wire        reset,
+    input  wire        rst_n,       // active-low reset
+    input  wire        frame_tick,  // Move once per frame
 
     input  wire [5:0]  pacmanX,   // pacman tile X (0..27)
     input  wire [5:0]  pacmanY,   // pacman tile Y (0..35)
@@ -8,7 +9,7 @@ module blinky(
     input  wire        isChase,
     input  wire        isScatter,
 
-    // Tile-based wall indicators
+    // Now tile-based wall indicators, already provided by Pac-Man code
     input  wire        wallUp,
     input  wire        wallDown,
     input  wire        wallLeft,
