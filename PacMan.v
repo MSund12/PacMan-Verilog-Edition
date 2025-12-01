@@ -346,6 +346,11 @@ module vga_core_640x480(
   // fractional speed accumulator for 125/99 pixels per frame
   // (≈ 75.7576 px/s at 60 Hz)
   reg [7:0] speed_acc;        // remainder modulo 99
+  
+  // Direction change blocking: prevent movement into walls after direction changes
+  // Block movement for 2 cycles after direction change to allow wall detection pipeline to catch up
+  reg [1:0] direction_change_block;
+  reg [1:0] pac_dir_prev;
 
   // -------------------------
   // Game State Management
@@ -481,16 +486,6 @@ module vga_core_640x480(
   wire [7:0] tmp_acc_after_second = (tmp_acc_after_first >= 8'd99) ? (tmp_acc_after_first - 8'd99) : tmp_acc_after_first;
   wire [1:0] step_px_wire = step_px_calc + ((tmp_acc_after_first >= 8'd99) ? 2'd1 : 2'd0);
 
-  // Calculate where Pac-Man would be after moving step_px_wire pixels
-  // This is used for collision detection before actually moving
-  wire [9:0] next_pac_local_x, next_pac_local_y;
-  assign next_pac_local_x = (pac_dir == 2'd0) ? (pac_local_x + step_px_wire) :
-                             (pac_dir == 2'd1) ? (pac_local_x - step_px_wire) :
-                             pac_local_x;
-  assign next_pac_local_y = (pac_dir == 2'd2) ? (pac_local_y - step_px_wire) :
-                             (pac_dir == 2'd3) ? (pac_local_y + step_px_wire) :
-                             pac_local_y;
-
   // -------------------------
   // Pixel-level wall detection
   // Check multiple points along the hitbox edge in movement direction
@@ -552,7 +547,16 @@ module vga_core_640x480(
                      (pac_dir == 2'd2) ? top_edge_y :             // up: top edge
                      down_edge_y;                                 // down: bottom edge
   
-  // Clamp coordinates to valid image bounds
+  // Check if coordinates are out of bounds (treat out-of-bounds as no wall)
+  wire check_x_1_oob = (check_x_1 >= IMG_W);
+  wire check_y_1_oob = (check_y_1 >= IMG_H);
+  wire check_x_2_oob = (check_x_2 >= IMG_W);
+  wire check_y_2_oob = (check_y_2 >= IMG_H);
+  wire check_x_3_oob = (check_x_3 >= IMG_W);
+  wire check_y_3_oob = (check_y_3 >= IMG_H);
+  
+  // Clamp coordinates to valid image bounds for ROM addressing
+  // (out-of-bounds checks will be ignored in wall detection logic)
   wire [9:0] check_x_1_clamped = (check_x_1 > IMG_W-1) ? IMG_W-1 : check_x_1;
   wire [9:0] check_y_1_clamped = (check_y_1 > IMG_H-1) ? IMG_H-1 : check_y_1;
   wire [9:0] check_x_2_clamped = (check_x_2 > IMG_W-1) ? IMG_W-1 : check_x_2;
@@ -568,20 +572,33 @@ module vga_core_640x480(
   wire [15:0] wall_check_addr_2 = addr_y_2 + check_x_2_clamped;
   wire [15:0] wall_check_addr_3 = addr_y_3 + check_x_3_clamped;
   
-  // Register addresses and direction together to keep them aligned with ROM latency
+  // Register addresses, direction, and out-of-bounds flags together to keep them aligned with ROM latency
   reg [15:0] wall_check_addr_1_d, wall_check_addr_2_d, wall_check_addr_3_d;
   reg [1:0] pac_dir_d;
+  reg check_x_1_oob_d, check_y_1_oob_d, check_x_2_oob_d, check_y_2_oob_d, check_x_3_oob_d, check_y_3_oob_d;
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       wall_check_addr_1_d <= 16'd0;
       wall_check_addr_2_d <= 16'd0;
       wall_check_addr_3_d <= 16'd0;
       pac_dir_d <= 2'd1;  // Match initial pac_dir (left)
+      check_x_1_oob_d <= 1'b0;
+      check_y_1_oob_d <= 1'b0;
+      check_x_2_oob_d <= 1'b0;
+      check_y_2_oob_d <= 1'b0;
+      check_x_3_oob_d <= 1'b0;
+      check_y_3_oob_d <= 1'b0;
     end else begin
       wall_check_addr_1_d <= wall_check_addr_1;
       wall_check_addr_2_d <= wall_check_addr_2;
       wall_check_addr_3_d <= wall_check_addr_3;
       pac_dir_d <= pac_dir;
+      check_x_1_oob_d <= check_x_1_oob;
+      check_y_1_oob_d <= check_y_1_oob;
+      check_x_2_oob_d <= check_x_2_oob;
+      check_y_2_oob_d <= check_y_2_oob;
+      check_x_3_oob_d <= check_x_3_oob;
+      check_y_3_oob_d <= check_y_3_oob;
     end
   end
   
@@ -604,30 +621,63 @@ module vga_core_640x480(
     .data(wall_pix_3)
   );
   
-  // Register ROM outputs (now 2 cycles total latency: address reg + ROM)
+  // Register ROM outputs and out-of-bounds flags (now 2 cycles total latency: address reg + ROM)
   reg [3:0] wall_pix_1_d, wall_pix_2_d, wall_pix_3_d;
   reg [1:0] pac_dir_d2;  // Register direction again to match ROM output latency
+  reg check_x_1_oob_d2, check_y_1_oob_d2, check_x_2_oob_d2, check_y_2_oob_d2, check_x_3_oob_d2, check_y_3_oob_d2;
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       wall_pix_1_d <= 4'h0;
       wall_pix_2_d <= 4'h0;
       wall_pix_3_d <= 4'h0;
       pac_dir_d2 <= 2'd1;  // Match initial pac_dir (left)
+      check_x_1_oob_d2 <= 1'b0;
+      check_y_1_oob_d2 <= 1'b0;
+      check_x_2_oob_d2 <= 1'b0;
+      check_y_2_oob_d2 <= 1'b0;
+      check_x_3_oob_d2 <= 1'b0;
+      check_y_3_oob_d2 <= 1'b0;
     end else begin
       wall_pix_1_d <= wall_pix_1;
       wall_pix_2_d <= wall_pix_2;
       wall_pix_3_d <= wall_pix_3;
       pac_dir_d2 <= pac_dir_d;  // Track direction that matches these wall checks
+      check_x_1_oob_d2 <= check_x_1_oob_d;
+      check_y_1_oob_d2 <= check_y_1_oob_d;
+      check_x_2_oob_d2 <= check_x_2_oob_d;
+      check_y_2_oob_d2 <= check_y_2_oob_d;
+      check_x_3_oob_d2 <= check_x_3_oob_d;
+      check_y_3_oob_d2 <= check_y_3_oob_d;
     end
   end
   
   // Check if any checked pixel is a wall (4'hC = 12 decimal)
-  wire wall_pixel_found = (wall_pix_1_d == 4'hC) || (wall_pix_2_d == 4'hC) || (wall_pix_3_d == 4'hC);
+  // Only consider pixels that are within bounds (out-of-bounds treated as no wall)
+  wire wall_pixel_found = ((wall_pix_1_d == 4'hC) && !check_x_1_oob_d2 && !check_y_1_oob_d2) ||
+                          ((wall_pix_2_d == 4'hC) && !check_x_2_oob_d2 && !check_y_2_oob_d2) ||
+                          ((wall_pix_3_d == 4'hC) && !check_x_3_oob_d2 && !check_y_3_oob_d2);
   
   // Block movement if leading edge hits wall AND direction matches
   // Only use wall detection if the current direction matches the direction used for the wall check
   // This prevents using stale wall checks after direction changes
   wire wall_detected = wall_pixel_found && (pac_dir == pac_dir_d2);
+  
+  // Track direction changes and block movement for 2 cycles to allow wall detection pipeline to catch up
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      direction_change_block <= 2'd0;
+      pac_dir_prev <= 2'd1;  // Match initial pac_dir
+    end else begin
+      pac_dir_prev <= pac_dir;
+      if (pac_dir != pac_dir_prev && game_started) begin
+        // Direction changed - block movement for 2 cycles
+        direction_change_block <= 2'd2;
+      end else if (direction_change_block > 0) begin
+        // Count down the blocking period
+        direction_change_block <= direction_change_block - 1;
+      end
+    end
+  end
 
   // -------------------------
   // Dot Collection System
@@ -889,6 +939,8 @@ module vga_core_640x480(
       speed_acc <= 8'd0;
       player_has_moved <= 1'b0;
       pipeline_init_counter <= 3'd0;
+      direction_change_block <= 2'd0;
+      pac_dir_prev <= 2'd1;  // Match initial pac_dir
     end else begin
       // Reset player_has_moved when game state changes to ATTRACT or READY
       if (game_state == STATE_ATTRACT || game_state == STATE_READY) begin
@@ -915,7 +967,8 @@ module vga_core_640x480(
         speed_acc <= tmp_acc_after_second;
 
         // move step_px_wire pixels this frame if path is clear
-        if (step_px_wire != 2'd0 && pac_in_maze && !wall_detected) begin
+        // Block movement for 2 cycles after direction change to allow wall detection pipeline to catch up
+        if (step_px_wire != 2'd0 && pac_in_maze && !wall_detected && direction_change_block == 2'd0) begin
           case (pac_dir)
             2'd0: pac_x <= pac_x + step_px_wire;  // right
             2'd1: pac_x <= pac_x - step_px_wire;  // left
