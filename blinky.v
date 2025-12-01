@@ -59,12 +59,6 @@ reg [5:0] targetX;
 reg [5:0] targetY;
 
 // -------------------------------------------------------
-// 5-second start delay (count frame ticks: 5 seconds * 60 Hz = 300 ticks)
-// -------------------------------------------------------
-reg [8:0] startDelay = 0;  // 0 to 300 (9 bits)
-reg       delayDone  = 0;
-
-// -------------------------------------------------------
 // Use frame_tick input instead of generating our own
 // frame_tick is already synchronized to 60 Hz from PacMan.v
 // -------------------------------------------------------
@@ -105,21 +99,10 @@ always @(posedge clk or negedge rst_n) begin
         blinkyY      <= BLINKY_START_TILE_Y;
         startOffsetX <= BLINKY_OFFSET_X;
         startOffsetY <= BLINKY_OFFSET_Y;
-        startDelay   <= 0;
-        delayDone    <= 0;
         blinkyAcc    <= 0;
     end else begin
-        // 5-second spawn delay (count frame ticks: 5 seconds * 60 Hz = 300 ticks)
-        if (!delayDone) begin
-            if (frame_tick) begin
-                if (startDelay < 9'd300)
-                    startDelay <= startDelay + 1;
-                else
-                    delayDone <= 1;
-            end
-        end
-        // Move at 60 Hz after delay, using frame_tick input
-        else if (frame_tick) begin
+        // Move immediately when frame_tick is active (no delay)
+        if (frame_tick) begin
             blinkyAcc <= blinkyAccAfter;
 
             if (blinkyStep) begin
