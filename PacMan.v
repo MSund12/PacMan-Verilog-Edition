@@ -319,8 +319,6 @@ module vga_core_640x480(
     .is_wall(render_tile_wall)
   );
   
-  // Dot map provides render_has_dot output for rendering
-  wire render_tile_has_dot;
   
   // Power pellet rendering wire (will reference pellets_collected declared later)
   wire is_render_pellet_tile = is_power_pellet_tile(render_tile_x, render_tile_y);
@@ -360,8 +358,6 @@ module vga_core_640x480(
   localparam [2:0] STATE_READY = 3'd1;
   localparam [2:0] STATE_PLAYING = 3'd2;
   localparam [2:0] STATE_DYING = 3'd3;
-  localparam [2:0] STATE_GAME_OVER = 3'd4;
-  localparam [2:0] STATE_LEVEL_COMPLETE = 3'd5;
   
   // Game state variables
   reg [2:0] game_state;
@@ -404,16 +400,10 @@ module vga_core_640x480(
         end
         
         STATE_PLAYING: begin
-          // Check for level completion (highest priority)
-          if (level_complete) begin
-            game_state <= STATE_LEVEL_COMPLETE;
-          end else if (lose_life) begin
-            // Check for life loss
+          // Check for life loss
+          if (lose_life) begin
             game_state <= STATE_DYING;
             dying_timer <= 16'd0;
-          end else if (game_over) begin
-            // Check for game over
-            game_state <= STATE_GAME_OVER;
           end else begin
             game_state <= STATE_PLAYING;  // Stay in PLAYING
           end
@@ -425,32 +415,9 @@ module vga_core_640x480(
             dying_timer <= dying_timer + 16'd1;
             game_state <= STATE_DYING;  // Stay in DYING
           end else begin
-            // Check if game over
-            if (game_over) begin
-              game_state <= STATE_GAME_OVER;
-            end else begin
-              // Reset positions and continue
-              game_state <= STATE_READY;
-              dying_timer <= 16'd0;
-            end
-          end
-        end
-        
-        STATE_LEVEL_COMPLETE: begin
-          // Level complete - advance to next level
-          current_level <= current_level + 5'd1;
-          game_state <= STATE_READY;
-          // Reset will be handled by level_reset signal
-        end
-        
-        STATE_GAME_OVER: begin
-          // Wait for restart (start_game trigger resets everything)
-          if (start_game_trigger) begin
-            game_state <= STATE_ATTRACT;
-            current_level <= 5'd1;
-            start_game_trigger <= 1'b0;  // Clear trigger when consumed
-          end else begin
-            game_state <= STATE_GAME_OVER;  // Stay in GAME_OVER
+            // Reset positions and continue
+            game_state <= STATE_READY;
+            dying_timer <= 16'd0;
           end
         end
         
@@ -680,7 +647,7 @@ module vga_core_640x480(
   end
 
   // -------------------------
-  // Dot Collection System
+  // Pac-Man Position Tracking
   // -------------------------
   // Pac-Man's current tile (center position)
   wire [4:0] pac_center_tile_x = pac_local_x[9:3];  // 0..27
@@ -691,28 +658,6 @@ module vga_core_640x480(
   level_rom ULEVEL_PAC_CENTER (
     .tile_index(pac_center_tile_index),
     .is_wall(pac_center_wall)
-  );
-  
-  // Dot map: tracks which tiles have dots
-  wire dot_has_dot;
-  wire [7:0] dots_remaining;
-  reg level_reset;
-  reg dot_collected;
-  
-  dot_map UDOT_MAP (
-    .clk(pclk),
-    .rst_n(rst_n),
-    .level_reset(level_reset),
-    .tile_x(pac_center_tile_x),
-    .tile_y(pac_center_tile_y),
-    .clear_dot(dot_collected),
-    .is_wall_tile(pac_center_wall),
-    .has_dot(dot_has_dot),
-    .render_tile_x(render_tile_x),
-    .render_tile_y(render_tile_y),
-    .render_is_wall(render_tile_wall),
-    .render_has_dot(render_tile_has_dot),
-    .dots_remaining(dots_remaining)
   );
   
   // -------------------------
@@ -765,8 +710,8 @@ module vga_core_640x480(
         pellet_collected <= 1'b0;
       end
       
-      // Reset pellets on level reset
-      if (level_reset) begin
+      // Reset pellets on game start
+      if (start_game && !game_started) begin
         pellets_collected <= 4'b0000;
       end
     end
@@ -784,13 +729,6 @@ module vga_core_640x480(
                                  (is_render_pellet_3 && pellets_collected[2]) ||
                                  (is_render_pellet_4 && pellets_collected[3]);
   
-  // -------------------------
-  // Scoring System
-  // -------------------------
-  wire [15:0] score;
-  wire [2:0] lives;
-  wire [15:0] high_score;
-  wire game_over;
   // -------------------------
   // Ghost Collision Detection
   // -------------------------
@@ -832,74 +770,8 @@ module vga_core_640x480(
   end
   
   wire lose_life = lose_life_reg;
-  wire level_complete = (dots_remaining == 8'd0);  // All dots collected
   wire ghost_eaten = ghost_eaten_reg;
   wire [1:0] ghost_eaten_count = ghost_eaten_count_reg;
-  
-  score_manager USCORE (
-    .clk(pclk),
-    .rst_n(rst_n),
-    .game_started(game_started),
-    .dot_collected(dot_collected),
-    .pellet_collected(pellet_collected),
-    .ghost_eaten(ghost_eaten),
-    .ghost_eaten_count(ghost_eaten_count),
-    .lose_life(lose_life),
-    .level_complete(level_complete),
-    .score(score),
-    .lives(lives),
-    .high_score(high_score),
-    .game_over(game_over)
-  );
-  
-  // Detect dot collection: when Pac-Man's center enters a tile with a dot
-  reg dot_has_dot_prev;
-  reg [4:0] last_collected_tile_x;
-  reg [5:0] last_collected_tile_y;
-  reg [9:0] level_reset_counter;
-  
-  // Combinational logic for dot collection detection
-  wire new_tile = (pac_center_tile_x != last_collected_tile_x) || (pac_center_tile_y != last_collected_tile_y);
-  wire entering_dot_tile = dot_has_dot && !dot_has_dot_prev && game_started && pac_in_maze && !pac_center_wall;
-  
-  always @(posedge pclk or negedge rst_n) begin
-    if (!rst_n) begin
-      dot_collected <= 1'b0;
-      dot_has_dot_prev <= 1'b0;
-      last_collected_tile_x <= 5'd0;
-      last_collected_tile_y <= 6'd0;
-      level_reset <= 1'b0;
-      level_reset_counter <= 10'd0;
-    end else begin
-      dot_has_dot_prev <= dot_has_dot;
-      
-      // Generate one-cycle pulse when entering a tile with a dot
-      // Also check that we haven't already collected from this tile
-      
-      if (entering_dot_tile && new_tile) begin
-        dot_collected <= 1'b1;
-        last_collected_tile_x <= pac_center_tile_x;
-        last_collected_tile_y <= pac_center_tile_y;
-      end else begin
-        dot_collected <= 1'b0;
-      end
-      
-      // Level reset: trigger when game starts or level advances
-      // Hold reset for enough cycles to complete dot map reset (1008 cycles)
-      if (start_game && !game_started) begin
-        level_reset <= 1'b1;
-        level_reset_counter <= 10'd0;
-        last_collected_tile_x <= 5'd0;
-        last_collected_tile_y <= 6'd0;
-      end else if (level_reset && level_reset_counter < 10'd1100) begin
-        // Keep reset active for enough cycles
-        level_reset_counter <= level_reset_counter + 10'd1;
-      end else begin
-        level_reset <= 1'b0;
-        level_reset_counter <= 10'd0;
-      end
-    end
-  end
 
   // Level-based speed parameters
   wire [7:0] pacman_speed, ghost_speed;
@@ -1226,10 +1098,8 @@ module vga_core_640x480(
                 // Power pellet: larger white circle (render as 2x2 dot for now)
                 // TODO: Use dedicated power pellet sprite
                 r <= 4'hF; g <= 4'hF; b <= 4'hF;   // white power pellet
-              end else if (render_tile_has_dot && !render_tile_wall && !is_render_pellet_tile) begin
-                r <= 4'hF; g <= 4'hF; b <= 4'hF;   // white dot
               end else begin
-                r <= 4'h0; g <= 4'h0; b <= 4'h0;   // background (dot/pellet collected)
+                r <= 4'h0; g <= 4'h0; b <= 4'h0;   // background
               end
             end
             4'h7: begin
