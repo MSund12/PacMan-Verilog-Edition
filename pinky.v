@@ -36,9 +36,9 @@ reg escapeDone = 0;
 reg escapedShifted = 0;
 
 // -----------------------------------------------------------
-// 5-second delay
+// Pinky releases first (no delay)
 // -----------------------------------------------------------
-localparam FIVE_SEC_TICKS = 25_000_000 * 5;
+localparam FIVE_SEC_TICKS = 25_000_000 * 0;  // Pinky releases immediately
 reg [27:0] startDelay = 0;
 reg        delayDone  = 0;
 
@@ -60,10 +60,10 @@ always @(posedge clk) begin
 end
 
 // -----------------------------------------------------------
-// Fractional speed accumulator
+// Fractional speed accumulator (5% slower than Blinky: 150 * 0.95 = 142.5, rounded to 142)
 // -----------------------------------------------------------
 reg [15:0] pinkyAcc;
-wire [15:0] accNext = pinkyAcc + 16'd150;
+wire [15:0] accNext = pinkyAcc + 16'd142;
 wire doStep = (accNext >= 16'd1000);
 wire [15:0] accAfter = doStep ? (accNext - 16'd1000) : accNext;
 

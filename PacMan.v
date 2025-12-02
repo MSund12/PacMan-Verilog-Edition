@@ -2,6 +2,7 @@
 module PacMan(
   input  wire CLOCK_50,
   input  wire KEY0,
+  input  wire KEY1,            // Start button (pin A7)
   input  wire [9:0] SW,        // Onboard switches
 
   output wire [9:0] LEDR,
@@ -29,6 +30,9 @@ module PacMan(
   vga_core_640x480 UCORE(
     .pclk(pclk),
     .rst_n(rst_n & pll_locked),
+
+    // Start button (KEY1, active-low)
+    .start_button(KEY1),
 
     // Movement controls from switches
     .move_up   (SW[3]),
@@ -72,6 +76,9 @@ endmodule
 module vga_core_640x480(
   input  wire        pclk,
   input  wire        rst_n,
+
+  // Start button (KEY1, active-low)
+  input  wire        start_button,
 
   // NEW: movement controls
   input  wire        move_up,
@@ -133,6 +140,24 @@ module vga_core_640x480(
   end
 
   wire frame_tick = (h == 10'd0 && v == 10'd0);
+
+  // -------------------------
+  // Game State Machine
+  // -------------------------
+  localparam [1:0] STATE_WAITING = 2'd0;  // Waiting for start button
+  localparam [1:0] STATE_PLAYING = 2'd1;  // Game is running
+  localparam [1:0] STATE_DEAD   = 2'd2;  // Pacman died, game over
+  
+  reg [1:0] game_state = STATE_WAITING;  // Initialize to waiting state
+  reg start_button_prev = 1'b1;  // KEY1 is active-low, so default to 1 (not pressed)
+  wire start_button_pressed = !start_button && start_button_prev;  // Detect falling edge (button press) - KEY1 goes from 1 to 0
+  
+  // Game state machine will be updated after collision detection is defined
+  // (collision wires are defined after ghost positions)
+  
+  wire game_playing = (game_state == STATE_PLAYING);
+  wire game_dead = (game_state == STATE_DEAD);
+  wire game_waiting = (game_state == STATE_WAITING);
 
   // Sync and raw visible (stage 0)
   wire h_vis_raw = (h < H_VIS);
@@ -372,7 +397,8 @@ module vga_core_640x480(
       pac_dir   <= 2'd1;                          // left
       speed_acc <= 8'd0;
     end else begin
-      if (frame_tick) begin
+      // Only allow movement when game is playing
+      if (frame_tick && game_playing) begin
         // Use the pre-calculated step_px_wire for movement
         speed_acc <= tmp_acc_after_second;
 
@@ -402,14 +428,17 @@ module vga_core_640x480(
         end
       end
 
-      if (move_up)
-        pac_dir <= 2'd2;   // up
-      else if (move_down)
-        pac_dir <= 2'd3;   // down
-      else if (move_left)
-        pac_dir <= 2'd1;   // left
-      else if (move_right)
-        pac_dir <= 2'd0;   // right
+      // Only allow direction changes when game is playing
+      if (game_playing) begin
+        if (move_up)
+          pac_dir <= 2'd2;   // up
+        else if (move_down)
+          pac_dir <= 2'd3;   // down
+        else if (move_left)
+          pac_dir <= 2'd1;   // left
+        else if (move_right)
+          pac_dir <= 2'd0;   // right
+      end
     end
   end
 
@@ -464,37 +493,44 @@ module vga_core_640x480(
       dot_eaten_tile_idx <= 10'd0;
       dot_eaten_counter <= 2'd0;
     end else begin
-      // Default: clear flags
-      pac_stop_frame <= 1'b0;
-      
-      if (frame_tick) begin
-        // Check if Pac-Man enters a new tile that has a dot (no centering requirement)
-        if ((pacman_tile_idx != last_pacman_tile_idx) && pacman_tile_has_dot) begin
-          dot_eaten <= 1'b1;  // Clear the dot (write enable for RAM)
-          dot_eaten_tile_idx <= pacman_tile_idx;  // Remember which tile to clear
-          dot_eaten_counter <= 2'd2;  // Keep write enable high for 2 cycles
-          score <= score + 16'd10;  // Add 10 points
-          pac_stop_frame <= 1'b1;  // Stop Pac-Man for this frame
-          last_pacman_tile_idx <= pacman_tile_idx;  // Remember this tile
-        end else if (pacman_tile_idx != last_pacman_tile_idx) begin
-          // Update last tile index even if no dot (to allow eating dots on return)
-          last_pacman_tile_idx <= pacman_tile_idx;
-        end
+      // Only process dots when playing
+      if (game_playing) begin
+        // Default: clear flags
+        pac_stop_frame <= 1'b0;
         
-        // Decrement counter and clear dot_eaten when counter reaches 0
-        if (dot_eaten_counter > 2'd0) begin
-          dot_eaten_counter <= dot_eaten_counter - 2'd1;
-          dot_eaten <= 1'b1;  // Keep write enable high
+        if (frame_tick) begin
+          // Check if Pac-Man enters a new tile that has a dot (no centering requirement)
+          if ((pacman_tile_idx != last_pacman_tile_idx) && pacman_tile_has_dot) begin
+            dot_eaten <= 1'b1;  // Clear the dot (write enable for RAM)
+            dot_eaten_tile_idx <= pacman_tile_idx;  // Remember which tile to clear
+            dot_eaten_counter <= 2'd2;  // Keep write enable high for 2 cycles
+            score <= score + 16'd10;  // Add 10 points
+            pac_stop_frame <= 1'b1;  // Stop Pac-Man for this frame
+            last_pacman_tile_idx <= pacman_tile_idx;  // Remember this tile
+          end else if (pacman_tile_idx != last_pacman_tile_idx) begin
+            // Update last tile index even if no dot (to allow eating dots on return)
+            last_pacman_tile_idx <= pacman_tile_idx;
+          end
+          
+          // Decrement counter and clear dot_eaten when counter reaches 0
+          if (dot_eaten_counter > 2'd0) begin
+            dot_eaten_counter <= dot_eaten_counter - 2'd1;
+            dot_eaten <= 1'b1;  // Keep write enable high
+          end else begin
+            dot_eaten <= 1'b0;  // Clear write enable
+          end
         end else begin
-          dot_eaten <= 1'b0;  // Clear write enable
+          // Not frame_tick - keep dot_eaten high if counter is active
+          if (dot_eaten_counter > 2'd0) begin
+            dot_eaten <= 1'b1;  // Keep write enable high
+          end else begin
+            dot_eaten <= 1'b0;
+          end
         end
       end else begin
-        // Not frame_tick - keep dot_eaten high if counter is active
-        if (dot_eaten_counter > 2'd0) begin
-          dot_eaten <= 1'b1;  // Keep write enable high
-        end else begin
-          dot_eaten <= 1'b0;
-        end
+        // Not playing - clear dot eating flags
+        dot_eaten <= 1'b0;
+        pac_stop_frame <= 1'b0;
       end
     end
   end
@@ -574,10 +610,14 @@ module vga_core_640x480(
     end
   end
 
+  // Ghost reset: active when system reset OR game is waiting (not when dead)
+  // This keeps ghosts in their positions when Pacman dies
+  wire ghost_reset = !rst_n || game_waiting;
+
   // Instantiate cleaned blinky module (tile-based)
   blinky UBLINKY (
     .clk(pclk),
-    .reset(!rst_n),   // blinky expects active-high reset
+    .reset(ghost_reset),   // blinky expects active-high reset
     .pacmanX(pacman_tile_x),
     .pacmanY(pacman_tile_y),
     .isChase(isChase),
@@ -660,7 +700,7 @@ module vga_core_640x480(
   // Instantiate inky module (tile-based)
   inky UINKY (
     .clk(pclk),
-    .reset(!rst_n),   // inky expects active-high reset
+    .reset(ghost_reset),   // inky expects active-high reset
     .pacX(pacman_tile_x),
     .pacY(pacman_tile_y),
     .pacDir(pac_dir_inky_format),
@@ -746,7 +786,7 @@ module vga_core_640x480(
   // Instantiate pinky module (tile-based)
   pinky UPINKY (
     .clk(pclk),
-    .reset(!rst_n),   // pinky expects active-high reset
+    .reset(ghost_reset),   // pinky expects active-high reset
     .pacmanX(pacman_tile_x),
     .pacmanY(pacman_tile_y),
     .pacmanDir(pac_dir_pinky_format),
@@ -823,7 +863,7 @@ module vga_core_640x480(
   // Instantiate clyde module (tile-based)
   clyde UCLYDE (
     .clk(pclk),
-    .reset(!rst_n),   // clyde expects active-high reset
+    .reset(ghost_reset),   // clyde expects active-high reset
     .pacmanX(pacman_tile_x),
     .pacmanY(pacman_tile_y),
     .isChase(isChase),
@@ -835,6 +875,57 @@ module vga_core_640x480(
     .clydeX(clyde_tile_x),
     .clydeY(clyde_tile_y)
   );
+
+  // -------------------------
+  // Collision Detection: Pacman vs Ghosts
+  // -------------------------
+  // Check if Pacman and any ghost are in the same tile (tile-based collision)
+  // This is checked every frame when game is playing
+  
+  wire pacman_blinky_collision = (pacman_tile_x == blinky_tile_x) && 
+                                  (pacman_tile_y == blinky_tile_y);
+  
+  wire pacman_inky_collision = (pacman_tile_x == inky_tile_x) && 
+                                (pacman_tile_y == inky_tile_y);
+  
+  wire pacman_pinky_collision = (pacman_tile_x == pinky_tile_x) && 
+                                 (pacman_tile_y == pinky_tile_y);
+  
+  wire pacman_clyde_collision = (pacman_tile_x == clyde_tile_x) && 
+                                 (pacman_tile_y == clyde_tile_y);
+  
+  wire any_collision = pacman_blinky_collision || pacman_inky_collision || 
+                       pacman_pinky_collision || pacman_clyde_collision;
+  
+  // Game state machine - handles start button and collisions
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      game_state <= STATE_WAITING;
+      start_button_prev <= 1'b1;  // KEY1 is active-low, default to 1 (not pressed)
+    end else begin
+      start_button_prev <= start_button;
+      
+      case (game_state)
+        STATE_WAITING: begin
+          if (start_button_pressed) begin
+            game_state <= STATE_PLAYING;
+          end
+        end
+        
+        STATE_PLAYING: begin
+          // Check for collision on frame tick
+          if (any_collision && frame_tick) begin
+            game_state <= STATE_DEAD;
+          end
+        end
+        
+        STATE_DEAD: begin
+          // Stay in DEAD state until reset
+          // Reset button will return to STATE_WAITING
+        end
+      endcase
+    end
+  end
 
   // -------------------------
   // Pac-Man sprite (13x13) using Pacman.hex
@@ -882,7 +973,8 @@ module vga_core_640x480(
   );
 
   // Pac-Man pixel is "active" when inside box and sprite index != 0 (0 = transparent)
-  wire pac_pix = in_pac_box && (pac_pix_data != 4'h0);
+  // Hide Pacman when dead
+  wire pac_pix = in_pac_box && (pac_pix_data != 4'h0) && !game_dead;
 
   // -------------------------
   // Blinky sprite (16x16) using Blinky.hex

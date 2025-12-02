@@ -59,6 +59,10 @@ set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to CLOCK_50
 set_location_assignment PIN_B8 -to KEY0
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to KEY0
 
+# PUSH BUTTON (KEY1) - Start button
+set_location_assignment PIN_A7 -to KEY1
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to KEY1
+
 # USER LEDS
 set_location_assignment PIN_A8 -to LEDR[0]
 set_location_assignment PIN_A9 -to LEDR[1]

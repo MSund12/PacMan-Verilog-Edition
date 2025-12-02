@@ -51,9 +51,9 @@ reg [5:0] targetX;
 reg [5:0] targetY;
 
 // =======================================================
-// 5-second delay
+// Clyde releases 8 seconds after Pinky (4 seconds after Inky)
 // =======================================================
-localparam FIVE_SEC_TICKS = 25_000_000 * 5;
+localparam FIVE_SEC_TICKS = 25_000_000 * 8;  // 8 seconds delay
 reg [27:0] startDelay = 0;
 reg        delayDone  = 0;
 
@@ -104,10 +104,10 @@ always @(*) begin
 end
 
 // =======================================================
-// Speed accumulator
+// Speed accumulator (5% slower than Blinky: 150 * 0.95 = 142.5, rounded to 142)
 // =======================================================
 reg [15:0] clydeAcc;
-wire [15:0] clydeAccNext  = clydeAcc + 16'd150;
+wire [15:0] clydeAccNext  = clydeAcc + 16'd142;
 wire        clydeStep     = (clydeAccNext >= 16'd1000);
 wire [15:0] clydeAccAfter = clydeStep ? (clydeAccNext - 16'd1000) : clydeAccNext;
 

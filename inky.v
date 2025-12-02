@@ -37,9 +37,9 @@ reg escapeDone = 0;
 reg escapedShifted = 0;
 
 // =======================================================
-// 5-second startup delay
+// Inky releases 4 seconds after Pinky
 // =======================================================
-localparam integer STARTUP_DELAY = 125_000_000;
+localparam integer STARTUP_DELAY = 25_000_000 * 4;  // 4 seconds delay
 reg [26:0] startupCounter = 0;
 wire startupDone = (startupCounter >= STARTUP_DELAY);
 
@@ -60,9 +60,9 @@ always @(posedge clk) begin
     end
 end
 
-// Fractional speed
+// Fractional speed (5% slower than Blinky: 150 * 0.95 = 142.5, rounded to 142)
 reg [15:0] inkyAcc;
-wire [15:0] inkyAccNext = inkyAcc + 16'd150;
+wire [15:0] inkyAccNext = inkyAcc + 16'd142;
 wire inkyStep = (inkyAccNext >= 16'd1000);
 wire [15:0] inkyAccAfter = inkyStep ? (inkyAccNext - 16'd1000) : inkyAccNext;
 
