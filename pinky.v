@@ -1,6 +1,7 @@
 module pinky(
     input  wire        clk,
     input  wire        reset,
+    input  wire        enable,   // Enable movement (active high)
 
     input  wire [5:0]  pacmanX,
     input  wire [5:0]  pacmanY,
@@ -36,9 +37,9 @@ reg escapeDone = 0;
 reg escapedShifted = 0;
 
 // -----------------------------------------------------------
-// Pinky releases first (no delay)
+// Pinky releases 4 seconds after Blinky (9 seconds total: 5 + 4)
 // -----------------------------------------------------------
-localparam FIVE_SEC_TICKS = 25_000_000 * 0;  // Pinky releases immediately
+localparam FIVE_SEC_TICKS = 25_000_000 * 9;  // 9 seconds delay
 reg [27:0] startDelay = 0;
 reg        delayDone  = 0;
 
@@ -169,8 +170,8 @@ always @(posedge clk or posedge reset) begin
         // Down allowed logic
         downAllowed <= escapeDone && (escapedShifted || desiredDir != 2'b01);
 
-        // Movement tick
-        if (delayDone && moveTick) begin
+        // Movement tick (only when enabled)
+        if (delayDone && moveTick && enable) begin
             pinkyAcc <= accAfter;
 
             if (doStep) begin

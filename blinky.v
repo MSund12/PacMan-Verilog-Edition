@@ -1,6 +1,7 @@
 module blinky(
     input  wire        clk,
     input  wire        reset,
+    input  wire        enable,   // Enable movement (active high)
 
     input  wire [5:0]  pacmanX,   // pacman tile X (0..27)
     input  wire [5:0]  pacmanY,   // pacman tile Y (0..35)
@@ -117,8 +118,8 @@ always @(posedge clk or posedge reset) begin
                 delayDone <= 1;
         end
 
-        // Movement tick
-        else if (moveTick) begin
+        // Movement tick (only when enabled)
+        else if (moveTick && enable) begin
             blinkyAcc <= blinkyAccAfter;
 
             if (blinkyStep) begin

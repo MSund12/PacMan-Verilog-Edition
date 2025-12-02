@@ -1,6 +1,7 @@
 module clyde(
     input  wire        clk,
     input  wire        reset,
+    input  wire        enable,   // Enable movement (active high)
 
     input  wire [5:0]  pacmanX,
     input  wire [5:0]  pacmanY,
@@ -51,9 +52,9 @@ reg [5:0] targetX;
 reg [5:0] targetY;
 
 // =======================================================
-// Clyde releases 8 seconds after Pinky (4 seconds after Inky)
+// Clyde releases 4 seconds after Inky (17 seconds total: 13 + 4)
 // =======================================================
-localparam FIVE_SEC_TICKS = 25_000_000 * 8;  // 8 seconds delay
+localparam FIVE_SEC_TICKS = 25_000_000 * 17;  // 17 seconds delay
 reg [27:0] startDelay = 0;
 reg        delayDone  = 0;
 
@@ -158,7 +159,7 @@ always @(posedge clk or posedge reset) begin
             end
         end
 
-        else if (moveTick) begin
+        else if (moveTick && enable) begin
             clydeAcc <= clydeAccAfter;
 
             if (clydeStep) begin

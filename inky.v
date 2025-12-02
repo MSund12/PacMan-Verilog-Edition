@@ -1,6 +1,7 @@
 module inky(
     input  wire        clk,
     input  wire        reset,
+    input  wire        enable,   // Enable movement (active high)
 
     input  wire [5:0]  pacX,
     input  wire [5:0]  pacY,
@@ -37,9 +38,9 @@ reg escapeDone = 0;
 reg escapedShifted = 0;
 
 // =======================================================
-// Inky releases 4 seconds after Pinky
+// Inky releases 4 seconds after Pinky (13 seconds total: 9 + 4)
 // =======================================================
-localparam integer STARTUP_DELAY = 25_000_000 * 4;  // 4 seconds delay
+localparam integer STARTUP_DELAY = 25_000_000 * 13;  // 13 seconds delay
 reg [26:0] startupCounter = 0;
 wire startupDone = (startupCounter >= STARTUP_DELAY);
 
@@ -167,7 +168,7 @@ always @(posedge clk) begin
         if (!escapeDone && inkyX == ESCAPE_X && inkyY == ESCAPE_Y)
             escapeDone <= 1;
 
-        if (startupDone && moveTick) begin
+        if (startupDone && moveTick && enable) begin
             inkyAcc <= inkyAccAfter;
 
             if (inkyStep) begin

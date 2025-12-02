@@ -142,6 +142,46 @@ module vga_core_640x480(
   wire frame_tick = (h == 10'd0 && v == 10'd0);
 
   // -------------------------
+  // Death Animation (flash Pacman 3 times)
+  // -------------------------
+  // Flash counter: 3 flashes = 6 states (on/off/on/off/on/off)
+  // Flash at ~10Hz (every 6 frames at 60Hz = ~0.1s per flash cycle)
+  reg [2:0] death_flash_count;  // 0-5 for 3 flashes
+  reg [2:0] flash_frame_counter;  // Count frames between flashes
+  reg death_animation_done;
+  
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      death_flash_count <= 3'd0;
+      flash_frame_counter <= 3'd0;
+      death_animation_done <= 1'b0;
+    end else begin
+      if (game_state == STATE_DEAD && !death_animation_done) begin
+        if (frame_tick) begin
+          if (flash_frame_counter >= 3'd5) begin  // Flash every 6 frames (~0.1s)
+            flash_frame_counter <= 3'd0;
+            if (death_flash_count < 3'd5) begin
+              death_flash_count <= death_flash_count + 3'd1;
+            end else begin
+              death_animation_done <= 1'b1;  // Animation complete, hide Pacman
+            end
+          end else begin
+            flash_frame_counter <= flash_frame_counter + 3'd1;
+          end
+        end
+      end else if (game_state != STATE_DEAD) begin
+        // Reset animation when leaving DEAD state
+        death_flash_count <= 3'd0;
+        flash_frame_counter <= 3'd0;
+        death_animation_done <= 1'b0;
+      end
+    end
+  end
+  
+  // Flash signal: visible when flash_count is even (0, 2, 4)
+  wire pacman_flash_visible = (death_flash_count[0] == 1'b0);
+
+  // -------------------------
   // Game State Machine
   // -------------------------
   localparam [1:0] STATE_WAITING = 2'd0;  // Waiting for start button
@@ -613,11 +653,15 @@ module vga_core_640x480(
   // Ghost reset: active when system reset OR game is waiting (not when dead)
   // This keeps ghosts in their positions when Pacman dies
   wire ghost_reset = !rst_n || game_waiting;
+  
+  // Ghost enable: ghosts can move only when game is playing
+  wire ghost_enable = game_playing;
 
   // Instantiate cleaned blinky module (tile-based)
   blinky UBLINKY (
     .clk(pclk),
     .reset(ghost_reset),   // blinky expects active-high reset
+    .enable(ghost_enable), // Enable movement only when playing
     .pacmanX(pacman_tile_x),
     .pacmanY(pacman_tile_y),
     .isChase(isChase),
@@ -701,6 +745,7 @@ module vga_core_640x480(
   inky UINKY (
     .clk(pclk),
     .reset(ghost_reset),   // inky expects active-high reset
+    .enable(ghost_enable), // Enable movement only when playing
     .pacX(pacman_tile_x),
     .pacY(pacman_tile_y),
     .pacDir(pac_dir_inky_format),
@@ -787,6 +832,7 @@ module vga_core_640x480(
   pinky UPINKY (
     .clk(pclk),
     .reset(ghost_reset),   // pinky expects active-high reset
+    .enable(ghost_enable), // Enable movement only when playing
     .pacmanX(pacman_tile_x),
     .pacmanY(pacman_tile_y),
     .pacmanDir(pac_dir_pinky_format),
@@ -864,6 +910,7 @@ module vga_core_640x480(
   clyde UCLYDE (
     .clk(pclk),
     .reset(ghost_reset),   // clyde expects active-high reset
+    .enable(ghost_enable), // Enable movement only when playing
     .pacmanX(pacman_tile_x),
     .pacmanY(pacman_tile_y),
     .isChase(isChase),
@@ -973,8 +1020,9 @@ module vga_core_640x480(
   );
 
   // Pac-Man pixel is "active" when inside box and sprite index != 0 (0 = transparent)
-  // Hide Pacman when dead
-  wire pac_pix = in_pac_box && (pac_pix_data != 4'h0) && !game_dead;
+  // Flash Pacman 3 times when dead, then hide completely
+  wire pac_pix = in_pac_box && (pac_pix_data != 4'h0) && 
+                 (!game_dead || (game_dead && !death_animation_done && pacman_flash_visible));
 
   // -------------------------
   // Blinky sprite (16x16) using Blinky.hex
