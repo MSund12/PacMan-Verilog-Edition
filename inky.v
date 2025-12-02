@@ -20,41 +20,32 @@ module inky(
 );
 
 // =======================================================
-// Starting tile position (tile-based, like Blinky)
+// Starting tile
 // =======================================================
-// Inky starting tile: tile X=15, tile Y=17
 localparam [5:0] INKY_START_TILE_X = 6'd11;
 localparam [5:0] INKY_START_TILE_Y = 6'd19;
 
-// =====================================================================
-// Declarations (must be OUTSIDE always blocks)
-// =====================================================================
+// =======================================================
+// Escape target tile (path out of ghost box)
+// =======================================================
+localparam [5:0] ESCAPE_X = 6'd13;
+localparam [5:0] ESCAPE_Y = 6'd16;
 
-reg signed [6:0] offsetX;
-reg signed [6:0] offsetY;
+reg escapeDone = 0;
 
-reg signed [7:0] vecX;
-reg signed [7:0] vecY;
+// NEW FLAG — allows down movement after shifting L/R once after escape
+reg escapedShifted = 0;
 
-reg signed [7:0] targetX;
-reg signed [7:0] targetY;
+// =======================================================
+// 5-second startup delay
+// =======================================================
+localparam integer STARTUP_DELAY = 125_000_000;
+reg [26:0] startupCounter = 0;
+wire startupDone = (startupCounter >= STARTUP_DELAY);
 
-// distance wires
-reg [7:0] distUp;
-reg [7:0] distDown;
-reg [7:0] distLeft;
-reg [7:0] distRight;
-
-// forbid reverse logic
-wire forbidUp    = (dir == 2'b10);
-wire forbidDown  = (dir == 2'b00);
-wire forbidLeft  = (dir == 2'b01);
-wire forbidRight = (dir == 2'b11);
-
-// =====================================================================
-// Movement timing (same as Blinky)
-// =====================================================================
-// 60 Hz movement tick
+// =======================================================
+// Movement tick generator (60 Hz)
+// =======================================================
 localparam MOVE_DIV = 416_666;
 reg [19:0] moveCount = 0;
 reg        moveTick  = 0;
@@ -69,113 +60,149 @@ always @(posedge clk) begin
     end
 end
 
-// Fractional speed (~0.15 tiles/frame, same as Blinky)
+// Fractional speed
 reg [15:0] inkyAcc;
 wire [15:0] inkyAccNext = inkyAcc + 16'd150;
 wire inkyStep = (inkyAccNext >= 16'd1000);
 wire [15:0] inkyAccAfter = inkyStep ? (inkyAccNext - 16'd1000) : inkyAccNext;
 
-// =====================================================================
-// 1. Offset 2 tiles ahead of Pac-Man
-// =====================================================================
-always @(*) begin
-    offsetX = pacX;
-    offsetY = pacY;
+// =======================================================
+// No-reverse rules
+// =======================================================
+wire forbidUp    = (dir == 2'b10);
+wire forbidDown  = (dir == 2'b00);
+wire forbidLeft  = (dir == 2'b01);
+wire forbidRight = (dir == 2'b11);
 
-    case(pacDir)
-        2'b00: offsetY = pacY - 2;   // UP
-        2'b10: offsetY = pacY + 2;   // DOWN
-        2'b01: offsetX = pacX + 2;   // RIGHT
-        2'b11: offsetX = pacX - 2;   // LEFT
-    endcase
+// =======================================================
+// Target selection
+// =======================================================
+reg signed [6:0] offsetX, offsetY;
+reg signed [7:0] vecX, vecY;
+reg signed [7:0] targetX, targetY;
+
+always @(*) begin
+    if (!escapeDone) begin
+        targetX = ESCAPE_X;
+        targetY = ESCAPE_Y;
+    end
+    else begin
+        offsetX = pacX;
+        offsetY = pacY;
+
+        case (pacDir)
+            2'b00: offsetY = pacY - 2;
+            2'b10: offsetY = pacY + 2;
+            2'b01: offsetX = pacX + 2;
+            2'b11: offsetX = pacX - 2;
+        endcase
+
+        vecX = offsetX - blinkyX;
+        vecY = offsetY - blinkyY;
+
+        targetX = offsetX + vecX;
+        targetY = offsetY + vecY;
+
+        if (targetX < 0)  targetX = 0;
+        if (targetY < 0)  targetY = 0;
+        if (targetX > 27) targetX = 27;
+        if (targetY > 35) targetY = 35;
+    end
 end
 
+// =======================================================
+// Distance calculation
+// =======================================================
+reg [7:0] distUp, distDown, distLeft, distRight;
 
-// =====================================================================
-// 2. Compute vector from Blinky → offset and double it
-// =====================================================================
 always @(*) begin
-    vecX = offsetX - blinkyX;
-    vecY = offsetY - blinkyY;
+    distUp    = 255;
+    distDown  = 255;
+    distLeft  = 255;
+    distRight = 255;
 
-    targetX = offsetX + vecX;
-    targetY = offsetY + vecY;
-
-    // clamp to map
-    if (targetX < 0)  targetX = 0;
-    if (targetY < 0)  targetY = 0;
-    if (targetX > 27) targetX = 27;
-    if (targetY > 35) targetY = 35;
-end
-
-
-// =====================================================================
-// 3. Compute distances for all possible movement directions
-// =====================================================================
-always @(*) begin
-    // default to max (blocked)
-    distUp    = 8'd255;
-    distDown  = 8'd255;
-    distLeft  = 8'd255;
-    distRight = 8'd255;
-
-    // Up
-    if (canMoveUp && !forbidUp) begin
+    if (canMoveUp && !forbidUp)
         distUp =
             (inkyX       > targetX ? inkyX       - targetX : targetX - inkyX) +
             ((inkyY - 1) > targetY ? (inkyY - 1) - targetY : targetY - (inkyY - 1));
-    end
 
-    // Down
     if (canMoveDown && !forbidDown) begin
-        distDown =
-            (inkyX       > targetX ? inkyX       - targetX : targetX - inkyX) +
-            ((inkyY + 1) > targetY ? (inkyY + 1) - targetY : targetY - (inkyY + 1));
+        if (!escapeDone) begin
+            // escape phase — forbid down
+        end else if (!escapedShifted) begin
+            // escaped but hasn't moved L/R yet — still block down
+        end else begin
+            // free movement after shifting left/right
+            distDown =
+                (inkyX       > targetX ? inkyX       - targetX : targetX - inkyX) +
+                ((inkyY + 1) > targetY ? (inkyY + 1) - targetY : targetY - (inkyY + 1));
+        end
     end
 
-    // Left
-    if (canMoveLeft && !forbidLeft) begin
+    if (canMoveLeft && !forbidLeft)
         distLeft =
             ((inkyX - 1) > targetX ? (inkyX - 1) - targetX : targetX - (inkyX - 1)) +
             (inkyY       > targetY ? inkyY       - targetY : targetY - inkyY);
-    end
 
-    // Right
-    if (canMoveRight && !forbidRight) begin
+    if (canMoveRight && !forbidRight)
         distRight =
             ((inkyX + 1) > targetX ? (inkyX + 1) - targetX : targetX - (inkyX + 1)) +
             (inkyY       > targetY ? inkyY       - targetY : targetY - inkyY);
-    end
 end
 
-
-// =====================================================================
-// 4. Movement state update
-// =====================================================================
+// =======================================================
+// Movement update
+// =======================================================
 always @(posedge clk) begin
     if (reset) begin
         inkyX <= INKY_START_TILE_X;
         inkyY <= INKY_START_TILE_Y;
-        dir   <= 2'b01;  // start RIGHT
+        dir   <= 2'b01;
         inkyAcc <= 0;
+        startupCounter <= 0;
+        escapeDone <= 0;
+        escapedShifted <= 0;
     end else begin
-        // Movement tick (same as Blinky)
-        if (moveTick) begin
+
+        if (!startupDone)
+            startupCounter <= startupCounter + 1;
+
+        if (!escapeDone && inkyX == ESCAPE_X && inkyY == ESCAPE_Y)
+            escapeDone <= 1;
+
+        if (startupDone && moveTick) begin
             inkyAcc <= inkyAccAfter;
 
             if (inkyStep) begin
-                // choose best direction
-                if (distUp <= distDown && distUp <= distLeft && distUp <= distRight && distUp != 255)
-                    dir <= 2'b00;
-                else if (distDown <= distUp && distDown <= distLeft && distDown <= distRight && distDown != 255)
-                    dir <= 2'b10;
-                else if (distLeft <= distUp && distLeft <= distDown && distLeft <= distRight && distLeft != 255)
-                    dir <= 2'b11;
-                else if (distRight != 255)
-                    dir <= 2'b01;
+                reg [1:0] nextDir;
 
-                // perform movement
-                case(dir)
+                if (distUp <= distDown &&
+                    distUp <= distLeft &&
+                    distUp <= distRight)
+                    nextDir = 2'b00;
+
+                else if (distDown <= distUp &&
+                         distDown <= distLeft &&
+                         distDown <= distRight)
+                    nextDir = 2'b10;
+
+                else if (distLeft <= distUp &&
+                         distLeft <= distDown &&
+                         distLeft <= distRight)
+                    nextDir = 2'b11;
+
+                else
+                    nextDir = 2'b01;
+
+                // detect L/R shift AFTER escape
+                if (escapeDone && !escapedShifted) begin
+                    if (nextDir == 2'b11 || nextDir == 2'b01)
+                        escapedShifted <= 1;
+                end
+
+                dir <= nextDir;
+
+                case (nextDir)
                     2'b00: if (canMoveUp)    inkyY <= inkyY - 1;
                     2'b10: if (canMoveDown)  inkyY <= inkyY + 1;
                     2'b01: if (canMoveRight) inkyX <= inkyX + 1;
