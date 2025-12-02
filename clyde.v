@@ -24,23 +24,25 @@ localparam [5:0] CORNER_X = 1;
 localparam [5:0] CORNER_Y = 35;
 
 // =======================================================
-// Clyde’s circular patrol center (YOU MAY EDIT THIS)
+// Clyde’s circle center
 // =======================================================
 localparam [5:0] CIRCLE_CENTER_X = 14;
 localparam [5:0] CIRCLE_CENTER_Y = 30;
 
-// Pacman distance to patrol center
 wire signed [7:0] cdx = pacmanX - CIRCLE_CENTER_X;
 wire signed [7:0] cdy = pacmanY - CIRCLE_CENTER_Y;
 wire [15:0] distCircSq = cdx*cdx + cdy*cdy;
-wire pacNearCircle = (distCircSq < 16'd64);   // < 8 tiles
+wire pacNearCircle = (distCircSq < 16'd64); // within 8 tiles
 
 // =======================================================
-// Starting tile position (tile-based, like Blinky)
+// Clyde starting position
 // =======================================================
-// Clyde starting tile: tile X=12, tile Y=16
-localparam [5:0] CLYDE_START_TILE_X = 6'd12;
-localparam [5:0] CLYDE_START_TILE_Y = 6'd16;
+localparam [5:0] CLYDE_START_TILE_X = 6'd15;
+localparam [5:0] CLYDE_START_TILE_Y = 6'd19;
+
+// Exit tile
+localparam [5:0] EXIT_X = 6'd13;
+localparam [5:0] EXIT_Y = 6'd16;
 
 // =======================================================
 // Target registers
@@ -56,7 +58,7 @@ reg [27:0] startDelay = 0;
 reg        delayDone  = 0;
 
 // =======================================================
-// 60 Hz move tick
+// 60Hz move tick
 // =======================================================
 localparam MOVE_DIV = 416_666;
 reg [19:0] moveCount = 0;
@@ -77,30 +79,20 @@ end
 // =======================================================
 wire signed [7:0] dx = pacmanX - clydeX;
 wire signed [7:0] dy = pacmanY - clydeY;
-
 wire [15:0] distSq = dx*dx + dy*dy;
 wire closeToPacman = (distSq < 16'd64);
 
 // =======================================================
-// Updated Target Selection
+// Target selection
 // =======================================================
 always @(*) begin
-
-    // NEW RULE:
-    // If Pac-Man is near Clyde’s circle → override everything and chase Pac-Man
     if (pacNearCircle) begin
         targetX = pacmanX;
         targetY = pacmanY;
-    end
-
-    // Scatter mode
-    else if (isScatter) begin
+    end else if (isScatter) begin
         targetX = CORNER_X;
         targetY = CORNER_Y;
-    end
-
-    // Chase mode
-    else begin
+    end else begin
         if (closeToPacman) begin
             targetX = CORNER_X;
             targetY = CORNER_Y;
@@ -120,19 +112,19 @@ wire        clydeStep     = (clydeAccNext >= 16'd1000);
 wire [15:0] clydeAccAfter = clydeStep ? (clydeAccNext - 16'd1000) : clydeAccNext;
 
 // =======================================================
-// Movement state
+// Escape state machine
 // =======================================================
+// 0 = wait 5 sec
+// 1 = move LEFT to EXIT_X
+// 2 = move UP to EXIT_Y
+// 3 = normal AI
 reg [1:0] escapeState = 0;
-reg [1:0] dir;
 
+reg [1:0] dir;
 reg [1:0] desiredDir;
 reg [1:0] reverseDir;
-
 reg canUp, canDown, canLeft, canRight;
 reg moved;
-
-reg [2:0] startOffsetX;
-reg [2:0] startOffsetY;
 
 // =======================================================
 // MAIN
@@ -141,19 +133,14 @@ always @(posedge clk or posedge reset) begin
     if (reset) begin
         clydeX      <= CLYDE_START_TILE_X;
         clydeY      <= CLYDE_START_TILE_Y;
-        startOffsetX <= 0;
-        startOffsetY <= 0;
+        startDelay  <= 0;
+        delayDone   <= 0;
+        clydeAcc    <= 0;
+        escapeState <= 0;
+        dir         <= 0;
+    end else begin
 
-        startDelay   <= 0;
-        delayDone    <= 0;
-        clydeAcc     <= 0;
-
-        escapeState  <= 0;
-        dir          <= 0;
-    end 
-    else begin
-
-        // 5-second wait
+        // 5 second wait
         if (!delayDone) begin
             if (startDelay < FIVE_SEC_TICKS)
                 startDelay <= startDelay + 1;
@@ -162,7 +149,7 @@ always @(posedge clk or posedge reset) begin
                 escapeState <= 1;
             end
         end
-        
+
         else if (moveTick) begin
             clydeAcc <= clydeAccAfter;
 
@@ -170,24 +157,38 @@ always @(posedge clk or posedge reset) begin
                 case (escapeState)
 
                 // ====================================================
-                // STEP 1 — Move straight upward out of ghost house
+                // STATE 1 — Move LEFT until X=13
                 // ====================================================
                 1: begin
-                    if (!wallUp)
-                        clydeY <= clydeY - 1;
-                    else
+                    if (clydeX > EXIT_X) begin
+                        if (!wallLeft) begin
+                            clydeX <= clydeX - 1;
+                            dir <= 2;
+                        end
+                    end else begin
                         escapeState <= 2;
-
-                    startOffsetX <= 0;
-                    startOffsetY <= 0;
+                    end
                 end
 
                 // ====================================================
-                // STEP 2 — NORMAL AI (with circle-target override)
+                // STATE 2 — Move UP until Y=16
                 // ====================================================
                 2: begin
+                    if (clydeY > EXIT_Y) begin
+                        if (!wallUp) begin
+                            clydeY <= clydeY - 1;
+                            dir <= 0;
+                        end
+                    end else begin
+                        escapeState <= 3; // done escaping
+                    end
+                end
 
-                    // Determine desired direction
+                // ====================================================
+                // STATE 3 — NORMAL AI
+                // ====================================================
+                3: begin
+
                     if (targetX > clydeX)
                         desiredDir = 3;
                     else if (targetX < clydeX)
@@ -211,7 +212,6 @@ always @(posedge clk or posedge reset) begin
 
                     moved = 0;
 
-                    // 1. Try desired direction
                     if (!moved && desiredDir != reverseDir) begin
                         case (desiredDir)
                             0: if (canUp)    begin clydeY <= clydeY - 1; dir <= 0; moved = 1; end
@@ -221,7 +221,6 @@ always @(posedge clk or posedge reset) begin
                         endcase
                     end
 
-                    // 2. Keep moving forward
                     if (!moved) begin
                         case (dir)
                             0: if (canUp)    begin clydeY <= clydeY - 1; moved = 1; end
@@ -231,16 +230,12 @@ always @(posedge clk or posedge reset) begin
                         endcase
                     end
 
-                    // 3. Try any legal non-reverse direction
                     if (!moved) begin
                         if (canUp    && reverseDir != 0) begin clydeY <= clydeY - 1; dir <= 0; moved = 1; end
                         else if (canDown  && reverseDir != 1) begin clydeY <= clydeY + 1; dir <= 1; moved = 1; end
                         else if (canLeft  && reverseDir != 2) begin clydeX <= clydeX - 1; dir <= 2; moved = 1; end
                         else if (canRight && reverseDir != 3) begin clydeX <= clydeX + 1; dir <= 3; moved = 1; end
                     end
-
-                    startOffsetX <= 0;
-                    startOffsetY <= 0;
                 end
 
                 endcase
