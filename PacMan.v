@@ -185,12 +185,9 @@ module vga_core_640x480(
   wire [9:0] tile_index_dot_raw = ((tile_y << 5) - (tile_y << 2)) + tile_x;  // tile_y*28 + tile_x
   wire [9:0] tile_index_dot = (tile_index_dot_raw > 10'd1007) ? 10'd1007 : tile_index_dot_raw;  // Clamp to valid range
   
-  // Dot ROM lookup
+  // Dot RAM lookup for display (will be instantiated after wire declarations)
   wire tile_has_dot;
-  dots_rom UDOTS (
-    .tile_index(tile_index_dot),
-    .has_dot(tile_has_dot)
-  );
+  wire pacman_tile_has_dot_ram;
   
   // Check if current pixel is in center of tile (for dot rendering)
   // Dots are typically 2x2 pixels in center of 8x8 tile
@@ -379,8 +376,8 @@ module vga_core_640x480(
         // Use the pre-calculated step_px_wire for movement
         speed_acc <= tmp_acc_after_second;
 
-        // move step_px_wire pixels this frame if path is clear
-        if (step_px_wire != 2'd0 && pac_in_maze && !wall_at_target) begin
+        // move step_px_wire pixels this frame if path is clear AND not stopped by dot eating
+        if (step_px_wire != 2'd0 && pac_in_maze && !wall_at_target && !pac_stop_frame) begin
           case (pac_dir)
             2'd0: pac_x <= pac_x + step_px_wire;  // right
             2'd1: pac_x <= pac_x - step_px_wire;  // left
@@ -402,11 +399,95 @@ module vga_core_640x480(
   end
 
   // -------------------------
-  // Blinky (Red Ghost) integration
+  // Dot eating and score tracking
   // -------------------------
-  // Convert pacman center position to tile coordinates (6-bit) for blinky
+  // Convert pacman center position to tile coordinates (needed for dot detection)
   wire [5:0] pacman_tile_x = pac_local_x[9:3];  // 0..27
   wire [5:0] pacman_tile_y = pac_local_y[9:3];  // 0..35
+  
+  // Calculate Pac-Man's current tile index
+  wire [9:0] pacman_tile_idx = ((pacman_tile_y << 5) - (pacman_tile_y << 2)) + pacman_tile_x;
+  
+  // Dot RAM instance (shared for display and Pac-Man detection)
+  dots_ram UDOTS (
+    .clk(pclk),
+    .rst_n(rst_n),
+    .read_tile_index_1(tile_index_dot),  // Display read
+    .read_tile_index_2(pacman_tile_idx), // Pac-Man read
+    .write_tile_index(dot_eaten_tile_idx),  // Write when clearing dots (use registered tile index)
+    .write_enable(dot_eaten),             // Write enable
+    .write_data(1'b0),                   // Clear dot (write 0)
+    .has_dot_1(tile_has_dot),            // Display output
+    .has_dot_2(pacman_tile_has_dot_ram)  // Pac-Man output
+  );
+  
+  // Pac-Man's tile dot status
+  wire pacman_tile_has_dot = pacman_tile_has_dot_ram;
+  
+  // Detect when Pac-Man enters a new tile (simplified - no centering requirement)
+  // This ensures dots are eaten 100% of the time when Pac-Man enters a tile with a dot
+  // Registers for dot eating detection
+  reg [9:0] last_pacman_tile_idx;
+  reg dot_eaten;
+  reg pac_stop_frame;  // Flag to stop Pac-Man for 1 frame when eating
+  
+  // Score register (max 244 dots * 10 = 2,440, so 12 bits is enough, but use 16 for display)
+  reg [15:0] score;
+  
+  // Register to hold tile index for dot clearing
+  reg [9:0] dot_eaten_tile_idx;
+  
+  // Counter to keep dot_eaten high for 2 cycles to ensure write completes
+  reg [1:0] dot_eaten_counter;
+  
+  always @(posedge pclk or negedge rst_n) begin
+    if (!rst_n) begin
+      score <= 16'd0;
+      last_pacman_tile_idx <= 10'd0;
+      dot_eaten <= 1'b0;
+      pac_stop_frame <= 1'b0;
+      dot_eaten_tile_idx <= 10'd0;
+      dot_eaten_counter <= 2'd0;
+    end else begin
+      // Default: clear flags
+      pac_stop_frame <= 1'b0;
+      
+      if (frame_tick) begin
+        // Check if Pac-Man enters a new tile that has a dot (no centering requirement)
+        if ((pacman_tile_idx != last_pacman_tile_idx) && pacman_tile_has_dot) begin
+          dot_eaten <= 1'b1;  // Clear the dot (write enable for RAM)
+          dot_eaten_tile_idx <= pacman_tile_idx;  // Remember which tile to clear
+          dot_eaten_counter <= 2'd2;  // Keep write enable high for 2 cycles
+          score <= score + 16'd10;  // Add 10 points
+          pac_stop_frame <= 1'b1;  // Stop Pac-Man for this frame
+          last_pacman_tile_idx <= pacman_tile_idx;  // Remember this tile
+        end else if (pacman_tile_idx != last_pacman_tile_idx) begin
+          // Update last tile index even if no dot (to allow eating dots on return)
+          last_pacman_tile_idx <= pacman_tile_idx;
+        end
+        
+        // Decrement counter and clear dot_eaten when counter reaches 0
+        if (dot_eaten_counter > 2'd0) begin
+          dot_eaten_counter <= dot_eaten_counter - 2'd1;
+          dot_eaten <= 1'b1;  // Keep write enable high
+        end else begin
+          dot_eaten <= 1'b0;  // Clear write enable
+        end
+      end else begin
+        // Not frame_tick - keep dot_eaten high if counter is active
+        if (dot_eaten_counter > 2'd0) begin
+          dot_eaten <= 1'b1;  // Keep write enable high
+        end else begin
+          dot_eaten <= 1'b0;
+        end
+      end
+    end
+  end
+
+  // -------------------------
+  // Blinky (Red Ghost) integration
+  // -------------------------
+  // pacman_tile_x and pacman_tile_y are already defined above for dot detection
 
   // Blinky position in tile coordinates (from blinky module)
   wire [5:0] blinky_tile_x, blinky_tile_y;
@@ -897,6 +978,156 @@ module vga_core_640x480(
   wire clyde_pix = in_clyde_box && (clyde_pix_data != 4'h0);
 
   // -------------------------
+  // Score display (simple 8x8 digit font)
+  // -------------------------
+  // Score display position (centered horizontally, above maze)
+  // Screen is 640 wide, 5 digits * 8 pixels = 40 pixels, so center at (640-40)/2 = 300
+  localparam SCORE_X = 10'd300;
+  localparam SCORE_Y = 10'd10;
+  localparam DIGIT_W = 8;
+  localparam DIGIT_H = 8;
+  localparam NUM_DIGITS = 5;
+  
+  // Check if we're in score display area (5 digits: 00000-99999)
+  wire in_score_area = (h_d >= SCORE_X) && (h_d < SCORE_X + (NUM_DIGITS * DIGIT_W)) &&
+                       (v_d >= SCORE_Y) && (v_d < SCORE_Y + DIGIT_H);
+  
+  // Extract score digits using binary to BCD conversion
+  // Score is binary, max 2440 (244 dots * 10 points)
+  // Use a simple BCD converter (double-dabble algorithm)
+  function [15:0] bin_to_bcd;
+    input [15:0] bin;
+    integer i;
+    reg [19:0] bcd;
+    begin
+      bcd = 0;
+      for (i = 15; i >= 0; i = i - 1) begin
+        if (bcd[3:0] >= 5) bcd[3:0] = bcd[3:0] + 3;
+        if (bcd[7:4] >= 5) bcd[7:4] = bcd[7:4] + 3;
+        if (bcd[11:8] >= 5) bcd[11:8] = bcd[11:8] + 3;
+        if (bcd[15:12] >= 5) bcd[15:12] = bcd[15:12] + 3;
+        bcd = {bcd[18:0], bin[i]};
+      end
+      bin_to_bcd = bcd[15:0];
+    end
+  endfunction
+  
+  wire [15:0] score_bcd = bin_to_bcd(score);
+  wire [3:0] score_units = score_bcd[3:0];
+  wire [3:0] score_tens = score_bcd[7:4];
+  wire [3:0] score_hundreds = score_bcd[11:8];
+  wire [3:0] score_thousands = score_bcd[15:12];
+  
+  // Calculate which digit we're rendering (0-4, left to right: thousands, hundreds, tens, units, always 0)
+  wire [2:0] digit_index = ((h_d - SCORE_X) >> 3);  // Divide by 8 (DIGIT_W), range 0-4
+  wire [3:0] current_digit = (digit_index == 3'd0) ? score_thousands :
+                            (digit_index == 3'd1) ? score_hundreds :
+                            (digit_index == 3'd2) ? score_tens :
+                            (digit_index == 3'd3) ? score_units :
+                            4'd0;  // 5th digit always 0
+  
+  // Pixel position within digit (clamp to valid range)
+  wire [2:0] digit_x = (h_d - SCORE_X) - ((digit_index << 3));  // Modulo 8, range 0-7
+  wire [2:0] digit_y = (v_d - SCORE_Y);  // Range 0-7, already clamped by in_score_area check
+  
+  // Simple 8x8 digit font ROM (0-9)
+  function [7:0] digit_font;
+    input [3:0] digit;
+    input [2:0] row;  // Row 0-7
+    begin
+      case (digit)
+        4'd0: digit_font = (row == 0) ? 8'b01111110 :
+                          (row == 1) ? 8'b11111111 :
+                          (row == 2) ? 8'b11000011 :
+                          (row == 3) ? 8'b11000011 :
+                          (row == 4) ? 8'b11000011 :
+                          (row == 5) ? 8'b11000011 :
+                          (row == 6) ? 8'b11111111 :
+                          8'b01111110;
+        4'd1: digit_font = (row == 0) ? 8'b00011000 :
+                          (row == 1) ? 8'b00111000 :
+                          (row == 2) ? 8'b00011000 :
+                          (row == 3) ? 8'b00011000 :
+                          (row == 4) ? 8'b00011000 :
+                          (row == 5) ? 8'b00011000 :
+                          (row == 6) ? 8'b00011000 :
+                          8'b01111110;
+        4'd2: digit_font = (row == 0) ? 8'b01111110 :
+                          (row == 1) ? 8'b11111111 :
+                          (row == 2) ? 8'b00000111 :
+                          (row == 3) ? 8'b01111110 :
+                          (row == 4) ? 8'b11110000 :
+                          (row == 5) ? 8'b11000000 :
+                          (row == 6) ? 8'b11111111 :
+                          8'b11111111;
+        4'd3: digit_font = (row == 0) ? 8'b11111110 :
+                          (row == 1) ? 8'b11111111 :
+                          (row == 2) ? 8'b00000111 :
+                          (row == 3) ? 8'b00111110 :
+                          (row == 4) ? 8'b00000111 :
+                          (row == 5) ? 8'b11000111 :
+                          (row == 6) ? 8'b11111111 :
+                          8'b01111110;
+        4'd4: digit_font = (row == 0) ? 8'b11000110 :
+                          (row == 1) ? 8'b11000110 :
+                          (row == 2) ? 8'b11000110 :
+                          (row == 3) ? 8'b11111111 :
+                          (row == 4) ? 8'b11111111 :
+                          (row == 5) ? 8'b00000110 :
+                          (row == 6) ? 8'b00000110 :
+                          8'b00000110;
+        4'd5: digit_font = (row == 0) ? 8'b11111111 :
+                          (row == 1) ? 8'b11111111 :
+                          (row == 2) ? 8'b11000000 :
+                          (row == 3) ? 8'b11111110 :
+                          (row == 4) ? 8'b01111111 :
+                          (row == 5) ? 8'b00000111 :
+                          (row == 6) ? 8'b11111111 :
+                          8'b11111110;
+        4'd6: digit_font = (row == 0) ? 8'b01111110 :
+                          (row == 1) ? 8'b11111111 :
+                          (row == 2) ? 8'b11000000 :
+                          (row == 3) ? 8'b11111110 :
+                          (row == 4) ? 8'b11111111 :
+                          (row == 5) ? 8'b11000011 :
+                          (row == 6) ? 8'b11111111 :
+                          8'b01111110;
+        4'd7: digit_font = (row == 0) ? 8'b11111111 :
+                          (row == 1) ? 8'b11111111 :
+                          (row == 2) ? 8'b00000110 :
+                          (row == 3) ? 8'b00001100 :
+                          (row == 4) ? 8'b00011000 :
+                          (row == 5) ? 8'b00110000 :
+                          (row == 6) ? 8'b01100000 :
+                          8'b11000000;
+        4'd8: digit_font = (row == 0) ? 8'b01111110 :
+                          (row == 1) ? 8'b11111111 :
+                          (row == 2) ? 8'b11000011 :
+                          (row == 3) ? 8'b01111110 :
+                          (row == 4) ? 8'b11000011 :
+                          (row == 5) ? 8'b11000011 :
+                          (row == 6) ? 8'b11111111 :
+                          8'b01111110;
+        4'd9: digit_font = (row == 0) ? 8'b01111110 :
+                          (row == 1) ? 8'b11111111 :
+                          (row == 2) ? 8'b11000011 :
+                          (row == 3) ? 8'b11111111 :
+                          (row == 4) ? 8'b01111111 :
+                          (row == 5) ? 8'b00000111 :
+                          (row == 6) ? 8'b11111111 :
+                          8'b01111110;
+        default: digit_font = 8'b00000000;
+      endcase
+    end
+  endfunction
+  
+  // Get pixel from font (bit 7 is leftmost pixel)
+  wire [7:0] digit_font_row = digit_font(current_digit, digit_y);
+  wire [2:0] digit_bit_index = 7 - digit_x;
+  // Ensure all indices are valid before accessing font
+  wire score_pixel = in_score_area && (digit_x < 8) && (digit_y < 8) && (digit_bit_index < 8) && digit_font_row[digit_bit_index];
+
+  // -------------------------
   // Unified palette lookup function
   // Maps 4-bit color index to RGB values
   // -------------------------
@@ -932,8 +1163,9 @@ module vga_core_640x480(
   wire [3:0] final_color_index;
   wire [11:0] palette_rgb;  // {r, g, b}
   
-  // Determine which pixel to display (priority: Pac-Man > Blinky > Inky > Pinky > Clyde > Dots > Maze)
-  assign final_color_index = pac_pix ? pac_pix_data :
+  // Determine which pixel to display (priority: Score > Pac-Man > Blinky > Inky > Pinky > Clyde > Dots > Maze)
+  assign final_color_index = score_pixel ? 4'hF :  // White score text
+                            pac_pix ? pac_pix_data :
                             blinky_pix ? blinky_pix_data :
                             inky_pix ? inky_pix_data :
                             pinky_pix ? pinky_pix_data :
@@ -1094,22 +1326,53 @@ endmodule
 
 
 // 28 x 36 = 1008 tiles, 1 bit per tile: 0=no dot, 1=dot present
-module dots_rom (
-    input  wire [9:0] tile_index,   // 0..1007 (y*28 + x)
-    output wire       has_dot
+// Changed from ROM to RAM to allow clearing dots when eaten
+// Supports dual-port reads: one for display, one for Pac-Man detection
+module dots_ram (
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire [9:0]  read_tile_index_1,   // 0..1007 (y*28 + x) - for display
+    input  wire [9:0]  read_tile_index_2,   // 0..1007 (y*28 + x) - for Pac-Man detection
+    input  wire [9:0]  write_tile_index,  // 0..1007 (y*28 + x) - for clearing
+    input  wire        write_enable,      // Write enable
+    input  wire        write_data,        // Data to write (0 to clear dot)
+    output reg         has_dot_1,          // Read output 1 (for display)
+    output reg         has_dot_2           // Read output 2 (for Pac-Man)
 );
     // Memory: 1008 entries, 1 bit each
     reg bits [0:1007];
 
     integer i;
-    initial begin
-        // Initialize to 0 in case file is missing/short
-        for (i = 0; i < 1008; i = i + 1)
-            bits[i] = 1'b0;
-
-        // Load 0/1 values from file: one bit per line
-        $readmemb("dots_map.bin", bits);
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            // Initialize from file on reset
+            for (i = 0; i < 1008; i = i + 1)
+                bits[i] = 1'b0;
+            $readmemb("dots_map.bin", bits);
+        end else begin
+            // Write operation (synchronous)
+            if (write_enable) begin
+                bits[write_tile_index] <= write_data;
+            end
+        end
     end
-
-    assign has_dot = bits[tile_index];
+    
+    // Read operations - combinational for immediate updates
+    // Handle read-during-write: if reading same address being written, return write data
+    // This ensures dots disappear immediately when eaten, even if display scans that tile
+    always @* begin
+        // Port 1: display read
+        if (write_enable && (read_tile_index_1 == write_tile_index)) begin
+            has_dot_1 = write_data;  // Return new write data (0 = cleared) if same address
+        end else begin
+            has_dot_1 = bits[read_tile_index_1];  // Normal read from RAM (includes cleared dots)
+        end
+        
+        // Port 2: Pac-Man detection read  
+        if (write_enable && (read_tile_index_2 == write_tile_index)) begin
+            has_dot_2 = write_data;  // Return new write data (0 = cleared) if same address
+        end else begin
+            has_dot_2 = bits[read_tile_index_2];  // Normal read from RAM (includes cleared dots)
+        end
+    end
 endmodule
