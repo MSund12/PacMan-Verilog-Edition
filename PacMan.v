@@ -684,7 +684,7 @@ module vga_core_640x480(
   // Pinky starting position (must match pinky.v)
   // From pinky.v calculations: tile X=13, tile Y=16 (calculated from pixel position)
   localparam [5:0] PINKY_START_TILE_X = 6'd13;
-  localparam [5:0] PINKY_START_TILE_Y = 6'd16;
+  localparam [5:0] PINKY_START_TILE_Y = 6'd19;
   localparam [3:0] PINKY_START_OFFSET_X = 4'd8;  // 0-7: pixel offset within tile
   localparam [3:0] PINKY_START_OFFSET_Y = 4'd4;  // 0-7: pixel offset within tile
 
@@ -767,8 +767,8 @@ module vga_core_640x480(
   wire [5:0] clyde_tile_x, clyde_tile_y;
 
   // Clyde starting position (must match clyde.v)
-  localparam [5:0] CLYDE_START_TILE_X = 6'd12;
-  localparam [5:0] CLYDE_START_TILE_Y = 6'd16;
+  localparam [5:0] CLYDE_START_TILE_X = 6'd15;
+  localparam [5:0] CLYDE_START_TILE_Y = 6'd19;
   localparam [3:0] CLYDE_START_OFFSET_X = 4'd8;  // 0-7: pixel offset within tile (8 = right edge, between tiles)
   localparam [3:0] CLYDE_START_OFFSET_Y = 4'd4;  // 4 = center
 
