@@ -170,13 +170,6 @@ set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to SW[2]
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to SW[3]
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to SW[9]
 
-# UART RX pin (GPIO_0 pin - adjust pin number based on your DE10-Lite GPIO header connection)
-# Common GPIO_0 pins: AB2, AB3, AB4, AB5, etc.
-# Check DE10-Lite manual for exact GPIO pin numbers
-# Using GPIO_0[0] which is typically PIN_AB2
-set_location_assignment PIN_AB2 -to UART_RX
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to UART_RX
-
 set_global_assignment -name POWER_PRESET_COOLING_SOLUTION "23 MM HEAT SINK WITH 200 LFPM AIRFLOW"
 set_global_assignment -name POWER_BOARD_THERMAL_MODEL "NONE (CONSERVATIVE)"
 set_global_assignment -name VERILOG_FILE pinky.v

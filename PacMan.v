@@ -2,7 +2,7 @@
 module PacMan(
   input  wire CLOCK_50,
   input  wire KEY0,
-  input  wire [9:0] SW,        // NEW: onboard switches
+  input  wire [9:0] SW,        // Onboard switches
 
   output wire [9:0] LEDR,
   output wire [6:0] HEX0, HEX1,
@@ -30,7 +30,7 @@ module PacMan(
     .pclk(pclk),
     .rst_n(rst_n & pll_locked),
 
-    // NEW: movement controls from switches
+    // Movement controls from switches
     .move_up   (SW[3]),
     .move_down (SW[2]),
     .move_left (SW[1]),
