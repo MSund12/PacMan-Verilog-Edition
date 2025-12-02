@@ -355,12 +355,21 @@ module vga_core_640x480(
     .data(wall_pix_2px_bot)
   );
 
-  // Collision detected if ANY checked pixel is a wall (0xC)
-  // Check both top and bottom/left and right edges to prevent slipping through gaps
-  wire wall_at_1px = (wall_pix_1px_top == 4'hC) || (wall_pix_1px_bot == 4'hC);
-  wire wall_at_2px = (wall_pix_2px_top == 4'hC) || (wall_pix_2px_bot == 4'hC);
-  wire wall_at_target = (step_px_wire >= 2'd1 && wall_at_1px) || 
-                        (step_px_wire >= 2'd2 && wall_at_2px);
+// Collision detected if ANY checked pixel is a wall (Blue = 0xC, Magenta = 0xD)
+// Check both top and bottom/left and right edges to prevent slipping through gaps
+wire pix_1px_is_wall = 
+       (wall_pix_1px_top == 4'hC) || (wall_pix_1px_bot == 4'hC) ||  // Blue
+       (wall_pix_1px_top == 4'hD) || (wall_pix_1px_bot == 4'hD);   // Magenta
+
+wire pix_2px_is_wall = 
+       (wall_pix_2px_top == 4'hC) || (wall_pix_2px_bot == 4'hC) ||  // Blue
+       (wall_pix_2px_top == 4'hD) || (wall_pix_2px_bot == 4'hD);   // Magenta
+
+wire wall_at_target =
+       (step_px_wire >= 2'd1 && pix_1px_is_wall) ||
+       (step_px_wire >= 2'd2 && pix_2px_is_wall);
+
+								
 
   // Movement at ~75.7576 px/s using 125/99 pixels per frame
   always @(posedge pclk or negedge rst_n) begin
