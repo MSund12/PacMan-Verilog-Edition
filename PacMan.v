@@ -384,6 +384,21 @@ module vga_core_640x480(
             2'd2: pac_y <= pac_y - step_px_wire;  // up
             2'd3: pac_y <= pac_y + step_px_wire;  // down
           endcase
+			 
+			 // -------------------------
+                // Tunnel teleport (Pac-Man)
+                // -------------------------
+                if ((pacman_tile_x == 6'd0) && (pacman_tile_y == 6'd19) && (pac_dir == 2'd1)) begin
+                    // Moving left into right tunnel exit
+                    pac_x <= IMG_X0 + (27 << 3) + 4;
+                    pac_y <= IMG_Y0 + (19 << 3) + 4;
+                end
+                else if ((pacman_tile_x == 6'd27) && (pacman_tile_y == 6'd19) && (pac_dir == 2'd0)) begin
+                    // Moving right into left tunnel exit
+                    pac_x <= IMG_X0 + (0 << 3) + 4;
+                    pac_y <= IMG_Y0 + (19 << 3) + 4;
+                end
+			 
         end
       end
 
