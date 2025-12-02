@@ -440,6 +440,9 @@ module vga_core_640x480(
   // Counter to keep dot_eaten high for 2 cycles to ensure write completes
   reg [1:0] dot_eaten_counter;
   
+  // Flag to ensure score is only incremented once per dot
+  reg score_incremented_this_tile;
+  
   always @(posedge pclk or negedge rst_n) begin
     if (!rst_n) begin
       score <= 16'd0;
@@ -448,21 +451,25 @@ module vga_core_640x480(
       pac_stop_frame <= 1'b0;
       dot_eaten_tile_idx <= 10'd0;
       dot_eaten_counter <= 2'd0;
+      score_incremented_this_tile <= 1'b0;
     end else begin
       // Default: clear flags
       pac_stop_frame <= 1'b0;
       
       if (frame_tick) begin
-        // Check if Pac-Man enters a new tile that has a dot (no centering requirement)
-        if ((pacman_tile_idx != last_pacman_tile_idx) && pacman_tile_has_dot) begin
+        // Check if Pac-Man enters a NEW tile that has a dot
+        // IMPORTANT: Only increment score ONCE per tile entry, exactly 10 points
+        if ((pacman_tile_idx != last_pacman_tile_idx) && pacman_tile_has_dot && !score_incremented_this_tile && (dot_eaten_counter == 2'd0)) begin
           dot_eaten <= 1'b1;  // Clear the dot (write enable for RAM)
           dot_eaten_tile_idx <= pacman_tile_idx;  // Remember which tile to clear
           dot_eaten_counter <= 2'd2;  // Keep write enable high for 2 cycles
-          score <= score + 16'd10;  // Add 10 points
+          score <= score + 16'd10;  // Add exactly 10 points (units digit will always be 0)
+          score_incremented_this_tile <= 1'b1;  // Mark that we've incremented for this tile
           pac_stop_frame <= 1'b1;  // Stop Pac-Man for this frame
           last_pacman_tile_idx <= pacman_tile_idx;  // Remember this tile
         end else if (pacman_tile_idx != last_pacman_tile_idx) begin
-          // Update last tile index even if no dot (to allow eating dots on return)
+          // Entering a new tile (with or without dot) - reset increment flag
+          score_incremented_this_tile <= 1'b0;
           last_pacman_tile_idx <= pacman_tile_idx;
         end
         
@@ -992,42 +999,99 @@ module vga_core_640x480(
   wire in_score_area = (h_d >= SCORE_X) && (h_d < SCORE_X + (NUM_DIGITS * DIGIT_W)) &&
                        (v_d >= SCORE_Y) && (v_d < SCORE_Y + DIGIT_H);
   
-  // Extract score digits using binary to BCD conversion
+  // Extract score digits - COMPLETELY REWRITTEN FROM SCRATCH
   // Score is binary, max 2440 (244 dots * 10 points)
-  // Use a simple BCD converter (double-dabble algorithm)
-  function [15:0] bin_to_bcd;
-    input [15:0] bin;
-    integer i;
-    reg [19:0] bcd;
-    begin
-      bcd = 0;
-      for (i = 15; i >= 0; i = i - 1) begin
-        if (bcd[3:0] >= 5) bcd[3:0] = bcd[3:0] + 3;
-        if (bcd[7:4] >= 5) bcd[7:4] = bcd[7:4] + 3;
-        if (bcd[11:8] >= 5) bcd[11:8] = bcd[11:8] + 3;
-        if (bcd[15:12] >= 5) bcd[15:12] = bcd[15:12] + 3;
-        bcd = {bcd[18:0], bin[i]};
-      end
-      bin_to_bcd = bcd[15:0];
-    end
-  endfunction
+  // Use simple repeated subtraction (guaranteed to synthesize, no multiplication)
   
-  wire [15:0] score_bcd = bin_to_bcd(score);
-  wire [3:0] score_units = score_bcd[3:0];
-  wire [3:0] score_tens = score_bcd[7:4];
-  wire [3:0] score_hundreds = score_bcd[11:8];
-  wire [3:0] score_thousands = score_bcd[15:12];
+  // Units digit: score % 10 (extract using subtraction)
+  // Use full score value, then extract lower 4 bits after subtraction
+  wire [15:0] score_minus_10 = score - 16'd10;
+  wire [15:0] score_minus_20 = score - 16'd20;
+  wire [15:0] score_minus_30 = score - 16'd30;
+  wire [15:0] score_minus_40 = score - 16'd40;
+  wire [15:0] score_minus_50 = score - 16'd50;
+  wire [15:0] score_minus_60 = score - 16'd60;
+  wire [15:0] score_minus_70 = score - 16'd70;
+  wire [15:0] score_minus_80 = score - 16'd80;
+  wire [15:0] score_minus_90 = score - 16'd90;
   
-  // Calculate which digit we're rendering (0-4, left to right: thousands, hundreds, tens, units, always 0)
-  wire [2:0] digit_index = ((h_d - SCORE_X) >> 3);  // Divide by 8 (DIGIT_W), range 0-4
-  wire [3:0] current_digit = (digit_index == 3'd0) ? score_thousands :
-                            (digit_index == 3'd1) ? score_hundreds :
-                            (digit_index == 3'd2) ? score_tens :
-                            (digit_index == 3'd3) ? score_units :
-                            4'd0;  // 5th digit always 0
+  // Units digit: Since we only add 10 points per dot, score is always a multiple of 10
+  // So units digit should ALWAYS be 0
+  wire [3:0] score_units;
+  // For scores < 100, use the subtraction method
+  // For scores >= 100, since score is always multiple of 10, units is always 0
+  assign score_units = (score < 16'd10) ? score[3:0] :
+                      (score < 16'd20) ? score_minus_10[3:0] :
+                      (score < 16'd30) ? score_minus_20[3:0] :
+                      (score < 16'd40) ? score_minus_30[3:0] :
+                      (score < 16'd50) ? score_minus_40[3:0] :
+                      (score < 16'd60) ? score_minus_50[3:0] :
+                      (score < 16'd70) ? score_minus_60[3:0] :
+                      (score < 16'd80) ? score_minus_70[3:0] :
+                      (score < 16'd90) ? score_minus_80[3:0] :
+                      (score < 16'd100) ? score_minus_90[3:0] :
+                      4'd0;  // For scores >= 100, units digit is always 0 (score is multiple of 10)
+  
+  // Tens digit: (score / 10) % 10
+  wire [15:0] score_div10 = score / 16'd10;
+  wire [3:0] score_tens;
+  assign score_tens = (score_div10 < 16'd10) ? score_div10[3:0] :
+                     (score_div10 < 16'd20) ? (score_div10[3:0] - 4'd10) :
+                     (score_div10 < 16'd30) ? (score_div10[3:0] - 4'd20) :
+                     (score_div10 < 16'd40) ? (score_div10[3:0] - 4'd30) :
+                     (score_div10 < 16'd50) ? (score_div10[3:0] - 4'd40) :
+                     (score_div10 < 16'd60) ? (score_div10[3:0] - 4'd50) :
+                     (score_div10 < 16'd70) ? (score_div10[3:0] - 4'd60) :
+                     (score_div10 < 16'd80) ? (score_div10[3:0] - 4'd70) :
+                     (score_div10 < 16'd90) ? (score_div10[3:0] - 4'd80) :
+                     (score_div10 < 16'd100) ? (score_div10[3:0] - 4'd90) :
+                     (score_div10 < 16'd110) ? (score_div10[3:0] - 4'd100) :
+                     (score_div10 < 16'd120) ? (score_div10[3:0] - 4'd110) :
+                     (score_div10 < 16'd130) ? (score_div10[3:0] - 4'd120) :
+                     (score_div10 < 16'd140) ? (score_div10[3:0] - 4'd130) :
+                     (score_div10 < 16'd150) ? (score_div10[3:0] - 4'd140) :
+                     (score_div10 < 16'd160) ? (score_div10[3:0] - 4'd150) :
+                     (score_div10 < 16'd170) ? (score_div10[3:0] - 4'd160) :
+                     (score_div10 < 16'd180) ? (score_div10[3:0] - 4'd170) :
+                     (score_div10 < 16'd190) ? (score_div10[3:0] - 4'd180) :
+                     (score_div10 < 16'd200) ? (score_div10[3:0] - 4'd190) :
+                     (score_div10 < 16'd210) ? (score_div10[3:0] - 4'd200) :
+                     (score_div10 < 16'd220) ? (score_div10[3:0] - 4'd210) :
+                     (score_div10 < 16'd230) ? (score_div10[3:0] - 4'd220) :
+                     (score_div10 < 16'd240) ? (score_div10[3:0] - 4'd230) :
+                     (score_div10 < 16'd250) ? (score_div10[3:0] - 4'd240) :
+                     (score_div10[3:0] - 4'd250);
+  
+  // Hundreds digit: (score / 100) % 10
+  wire [15:0] score_div100 = score / 16'd100;
+  wire [3:0] score_hundreds;
+  assign score_hundreds = (score_div100 < 16'd10) ? score_div100[3:0] :
+                         (score_div100 < 16'd20) ? (score_div100[3:0] - 4'd10) :
+                         (score_div100 < 16'd30) ? (score_div100[3:0] - 4'd20) :
+                         4'd0;  // Max score is 2440, so hundreds digit max is 2
+  
+  // Thousands digit: (score / 1000) % 10
+  wire [15:0] score_div1000 = score / 16'd1000;
+  wire [3:0] score_thousands;
+  assign score_thousands = (score_div1000 < 16'd10) ? score_div1000[3:0] : 4'd0;  // Max score is 2440, so thousands digit max is 2
+  
+  // Ten-thousands digit: score / 10000 (always 0 for max score 2440)
+  wire [3:0] score_ten_thousands = 4'd0;
+  
+  // Calculate which digit we're rendering (0-4, left to right: ten-thousands, thousands, hundreds, tens, units)
+  wire [9:0] h_offset = h_d - SCORE_X;  // Horizontal offset from score start
+  wire [2:0] digit_index = (h_offset >> 3);  // Divide by 8 (DIGIT_W), range 0-4
+  wire [2:0] digit_index_clamped = (digit_index > 3'd4) ? 3'd4 : digit_index;  // Clamp to 0-4
+  
+  // Map digit index to actual digit value (5 digits total)
+  wire [3:0] current_digit = (digit_index_clamped == 3'd0) ? score_ten_thousands :
+                            (digit_index_clamped == 3'd1) ? score_thousands :
+                            (digit_index_clamped == 3'd2) ? score_hundreds :
+                            (digit_index_clamped == 3'd3) ? score_tens :
+                            score_units;  // digit_index_clamped == 3'd4
   
   // Pixel position within digit (clamp to valid range)
-  wire [2:0] digit_x = (h_d - SCORE_X) - ((digit_index << 3));  // Modulo 8, range 0-7
+  wire [2:0] digit_x = h_offset[2:0];  // Lower 3 bits = position within digit (0-7)
   wire [2:0] digit_y = (v_d - SCORE_Y);  // Range 0-7, already clamped by in_score_area check
   
   // Simple 8x8 digit font ROM (0-9)
@@ -1122,10 +1186,17 @@ module vga_core_640x480(
   endfunction
   
   // Get pixel from font (bit 7 is leftmost pixel)
-  wire [7:0] digit_font_row = digit_font(current_digit, digit_y);
-  wire [2:0] digit_bit_index = 7 - digit_x;
+  // Ensure digit_y is in valid range (0-7) for font lookup
+  wire [2:0] digit_y_safe = (digit_y < 8) ? digit_y : 3'd0;
+  wire [7:0] digit_font_row = digit_font(current_digit, digit_y_safe);
+  wire [2:0] digit_bit_index = 7 - digit_x;  // Bit index: 0-7, where 0 is rightmost, 7 is leftmost
   // Ensure all indices are valid before accessing font
-  wire score_pixel = in_score_area && (digit_x < 8) && (digit_y < 8) && (digit_bit_index < 8) && digit_font_row[digit_bit_index];
+  wire score_pixel = in_score_area && 
+                     (digit_index_clamped < 5) &&  // Valid digit index (0-4)
+                     (digit_x < 8) && (digit_y < 8) &&  // Valid pixel position
+                     (digit_bit_index < 8) &&  // Valid bit index
+                     (current_digit < 10) &&  // Valid digit value (0-9)
+                     digit_font_row[digit_bit_index];  // Font bit is set
 
   // -------------------------
   // Unified palette lookup function
