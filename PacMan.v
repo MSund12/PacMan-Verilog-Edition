@@ -670,8 +670,8 @@ module vga_core_640x480(
   // From pinky.v calculations: tile X=13, tile Y=16 (calculated from pixel position)
   localparam [5:0] PINKY_START_TILE_X = 6'd13;
   localparam [5:0] PINKY_START_TILE_Y = 6'd16;
-  localparam [3:0] PINKY_START_OFFSET_X = 4'd7;  // 0-7: pixel offset within tile
-  localparam [3:0] PINKY_START_OFFSET_Y = 4'd7;  // 0-7: pixel offset within tile
+  localparam [3:0] PINKY_START_OFFSET_X = 4'd8;  // 0-7: pixel offset within tile
+  localparam [3:0] PINKY_START_OFFSET_Y = 4'd4;  // 0-7: pixel offset within tile
 
   // Check if Pinky is at starting position
   wire pinky_at_start = (pinky_tile_x == PINKY_START_TILE_X) && (pinky_tile_y == PINKY_START_TILE_Y);
