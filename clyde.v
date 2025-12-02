@@ -55,7 +55,7 @@ reg [5:0] targetY;
 // Clyde releases 4 seconds after Inky (17 seconds total: 13 + 4)
 // =======================================================
 localparam FIVE_SEC_TICKS = 25_000_000 * 17;  // 17 seconds delay
-reg [27:0] startDelay = 0;
+reg [28:0] startDelay = 0;  // Increased to 29 bits to hold 425,000,000
 reg        delayDone  = 0;
 
 // =======================================================

@@ -41,7 +41,7 @@ reg escapedShifted = 0;
 // Inky releases 4 seconds after Pinky (13 seconds total: 9 + 4)
 // =======================================================
 localparam integer STARTUP_DELAY = 25_000_000 * 13;  // 13 seconds delay
-reg [26:0] startupCounter = 0;
+reg [28:0] startupCounter = 0;  // Increased to 29 bits to hold 325,000,000
 wire startupDone = (startupCounter >= STARTUP_DELAY);
 
 // =======================================================
