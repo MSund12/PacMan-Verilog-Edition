@@ -18,12 +18,6 @@ module blinky(
     output reg [5:0]   blinkyY    // tile Y (0..35)
 );
 
-/* 
-Blinky (Red Ghost)
-Chase mode: target Pac-Man
-Scatter mode: target top-right corner
-*/
-
 // -------------------------------------------------------
 // Scatter corner
 // -------------------------------------------------------
@@ -91,7 +85,7 @@ wire blinkyStep = (blinkyAccNext >= 16'd1000);
 wire [15:0] blinkyAccAfter = blinkyStep ? (blinkyAccNext - 16'd1000) : blinkyAccNext;
 
 // -------------------------------------------------------
-// Direction registers (Clyde-style)
+// Direction registers
 // 0=up, 1=down, 2=left, 3=right
 // -------------------------------------------------------
 reg [1:0] dir;
@@ -99,11 +93,11 @@ reg [1:0] dir;
 reg [2:0] startOffsetX;
 reg [2:0] startOffsetY;
 
- // Legal movement flags
-                wire canUp    = !wallUp;
-                wire canDown  = !wallDown;
-                wire canLeft  = !wallLeft;
-                wire canRight = !wallRight;
+// Legal movement flags
+wire canUp    = !wallUp;
+wire canDown  = !wallDown;
+wire canLeft  = !wallLeft;
+wire canRight = !wallRight;
 
 always @(posedge clk or posedge reset) begin
     if (reset) begin
@@ -145,8 +139,6 @@ always @(posedge clk or posedge reset) begin
                     3: reverseDir = 2;
                 endcase
 
-               
-
                 // Desired direction based on target
                 if (targetX > blinkyX)       desiredDir = 3; // right
                 else if (targetX < blinkyX)  desiredDir = 2; // left
@@ -184,7 +176,21 @@ always @(posedge clk or posedge reset) begin
                     else if (canRight && reverseDir != 3) begin blinkyX <= blinkyX + 1; dir <= 3; moved = 1; end
                 end
 
-                // Clear start pixel offset
+                // ---------------------------------------------------
+                // 🔵 TUNNEL TELEPORT LOGIC (ADDED HERE)
+                // ---------------------------------------------------
+                if (blinkyY == 6'd19) begin
+                    if (blinkyX == 6'd0  && dir == 2) begin
+                        // entering left tunnel going left → exit right side
+                        blinkyX <= 6'd27;
+                    end
+                    else if (blinkyX == 6'd27 && dir == 3) begin
+                        // entering right tunnel going right → exit left side
+                        blinkyX <= 6'd0;
+                    end
+                end
+                // ---------------------------------------------------
+
                 startOffsetX <= 0;
                 startOffsetY <= 0;
 

@@ -128,11 +128,8 @@ always @(*) begin
 
     if (canMoveDown && !forbidDown) begin
         if (!escapeDone) begin
-            // escape phase — forbid down
         end else if (!escapedShifted) begin
-            // escaped but hasn't moved L/R yet — still block down
         end else begin
-            // free movement after shifting left/right
             distDown =
                 (inkyX       > targetX ? inkyX       - targetX : targetX - inkyX) +
                 ((inkyY + 1) > targetY ? (inkyY + 1) - targetY : targetY - (inkyY + 1));
@@ -151,7 +148,7 @@ always @(*) begin
 end
 
 // =======================================================
-// Movement update
+// Movement update + TUNNEL TELEPORT
 // =======================================================
 always @(posedge clk) begin
     if (reset) begin
@@ -194,7 +191,6 @@ always @(posedge clk) begin
                 else
                     nextDir = 2'b01;
 
-                // detect L/R shift AFTER escape
                 if (escapeDone && !escapedShifted) begin
                     if (nextDir == 2'b11 || nextDir == 2'b01)
                         escapedShifted <= 1;
@@ -202,12 +198,29 @@ always @(posedge clk) begin
 
                 dir <= nextDir;
 
+                // -----------------------------
+                // Regular movement
+                // -----------------------------
                 case (nextDir)
                     2'b00: if (canMoveUp)    inkyY <= inkyY - 1;
                     2'b10: if (canMoveDown)  inkyY <= inkyY + 1;
                     2'b01: if (canMoveRight) inkyX <= inkyX + 1;
                     2'b11: if (canMoveLeft)  inkyX <= inkyX - 1;
                 endcase
+
+                // =======================================================
+                // TUNNEL TELEPORT — INSERTED HERE
+                // =======================================================
+                if ((inkyX == 6'd0) && (inkyY == 6'd19) && (dir == 2'b11)) begin
+                    inkyX <= 6'd27;
+                    inkyY <= 6'd19;
+                end
+                else if ((inkyX == 6'd27) && (inkyY == 6'd19) && (dir == 2'b01)) begin
+                    inkyX <= 6'd0;
+                    inkyY <= 6'd19;
+                end
+                // =======================================================
+
             end
         end
     end

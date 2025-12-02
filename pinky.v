@@ -33,10 +33,10 @@ localparam [5:0] ESCAPE_X = 6'd13;
 localparam [5:0] ESCAPE_Y = 6'd16;
 
 reg escapeDone = 0;
-reg escapedShifted = 0;   // becomes 1 after pinky moves L/R after escape
+reg escapedShifted = 0;
 
 // -----------------------------------------------------------
-// 5-second delay before ghost begins movement
+// 5-second delay
 // -----------------------------------------------------------
 localparam FIVE_SEC_TICKS = 25_000_000 * 5;
 reg [27:0] startDelay = 0;
@@ -68,14 +68,13 @@ wire doStep = (accNext >= 16'd1000);
 wire [15:0] accAfter = doStep ? (accNext - 16'd1000) : accNext;
 
 // -----------------------------------------------------------
-// Determine target tile (normal behavior)
+// Target tile logic
 // -----------------------------------------------------------
 reg [5:0] targetX;
 reg [5:0] targetY;
 
 always @(*) begin
     if (!escapeDone) begin
-        // Escape target
         targetX = ESCAPE_X;
         targetY = ESCAPE_Y;
     end
@@ -114,7 +113,7 @@ always @(*) begin
 end
 
 // -----------------------------------------------------------
-// Movement legality logic
+// Movement legality
 // -----------------------------------------------------------
 wire canUp    = !wallUp;
 wire canDown  = !wallDown;
@@ -122,18 +121,27 @@ wire canLeft  = !wallLeft;
 wire canRight = !wallRight;
 
 // -----------------------------------------------------------
-// Direction 0=Up,1=Down,2=Left,3=Right
+// Direction registers
 // -----------------------------------------------------------
 reg [1:0] currDir;
 reg [1:0] desiredDir;
 reg [1:0] reverseDir;
-reg moved;
+reg       moved;
+reg       downAllowed;
 
 // -----------------------------------------------------------
-// Main movement logic
+// Tunnel teleport wires + direction mapping
 // -----------------------------------------------------------
-reg downAllowed;  // use reg instead of wire for always block
+localparam UP=2'b00, DOWN=2'b01, LEFT=2'b10, RIGHT=2'b11;
 
+wire ghost_left_tunnel  = (pinkyX == 6'd0)  && (pinkyY == 6'd19);
+wire ghost_right_tunnel = (pinkyX == 6'd27) && (pinkyY == 6'd19);
+
+wire [1:0] ghost_dir = currDir;
+
+// -----------------------------------------------------------
+// Main logic
+// -----------------------------------------------------------
 always @(posedge clk or posedge reset) begin
     if (reset) begin
         pinkyX <= PINKY_START_TILE_X;
@@ -146,7 +154,7 @@ always @(posedge clk or posedge reset) begin
         pinkyAcc <= 0;
     end else begin
 
-        // Handle startup delay
+        // Startup delay
         if (!delayDone) begin
             if (startDelay < FIVE_SEC_TICKS)
                 startDelay <= startDelay + 1;
@@ -154,11 +162,11 @@ always @(posedge clk or posedge reset) begin
                 delayDone <= 1;
         end
 
-        // Has Pinky reached escape tile?
+        // Escape tile reached?
         if (!escapeDone && pinkyX == ESCAPE_X && pinkyY == ESCAPE_Y)
             escapeDone <= 1;
 
-        // Determine if DOWN movement is allowed
+        // Down allowed logic
         downAllowed <= escapeDone && (escapedShifted || desiredDir != 2'b01);
 
         // Movement tick
@@ -168,7 +176,7 @@ always @(posedge clk or posedge reset) begin
             if (doStep) begin
                 moved = 0;
 
-                // Reverse direction logic
+                // Reverse mapping
                 case (currDir)
                     2'b00: reverseDir = 2'b01;
                     2'b01: reverseDir = 2'b00;
@@ -176,56 +184,67 @@ always @(posedge clk or posedge reset) begin
                     2'b11: reverseDir = 2'b10;
                 endcase
 
-                // Desired direction toward target
+                // Desired direction
                 if (targetX > pinkyX)       desiredDir = 2'b11;
                 else if (targetX < pinkyX)  desiredDir = 2'b10;
                 else if (targetY > pinkyY)  desiredDir = 2'b01;
                 else if (targetY < pinkyY)  desiredDir = 2'b00;
                 else                        desiredDir = currDir;
 
-                // ---------------------------------------------------
-                // 1. Try desired direction (if legal & not reverse)
-                // ---------------------------------------------------
+                // Try desired direction
                 if (!moved && desiredDir != reverseDir) begin
                     case (desiredDir)
-                        2'b00: if (canUp)    begin pinkyY <= pinkyY - 1; currDir <= 2'b00; moved = 1; end
+                        2'b00: if (canUp)
+                                    begin pinkyY <= pinkyY - 1; currDir <= 2'b00; moved = 1; end
                         2'b01: if (canDown && downAllowed)
-                                        begin pinkyY <= pinkyY + 1; currDir <= 2'b01; moved = 1; end
-                        2'b10: if (canLeft)  begin pinkyX <= pinkyX - 1; currDir <= 2'b10; moved = 1; end
-                        2'b11: if (canRight) begin pinkyX <= pinkyX + 1; currDir <= 2'b11; moved = 1; end
+                                    begin pinkyY <= pinkyY + 1; currDir <= 2'b01; moved = 1; end
+                        2'b10: if (canLeft)
+                                    begin pinkyX <= pinkyX - 1; currDir <= 2'b10; moved = 1; end
+                        2'b11: if (canRight)
+                                    begin pinkyX <= pinkyX + 1; currDir <= 2'b11; moved = 1; end
                     endcase
                 end
 
-                // ---------------------------------------------------
-                // Detect left/right shift AFTER escape
-                // ---------------------------------------------------
+                // Detect lateral shift after escape
                 if (escapeDone && !escapedShifted &&
                     (currDir == 2'b10 || currDir == 2'b11))
                     escapedShifted <= 1;
 
-                // ---------------------------------------------------
-                // 2. Try continuing straight
-                // ---------------------------------------------------
+                // Continue straight
                 if (!moved) begin
                     case (currDir)
-                        2'b00: if (canUp)    begin pinkyY <= pinkyY - 1; moved = 1; end
+                        2'b00: if (canUp) begin pinkyY <= pinkyY - 1; moved = 1; end
                         2'b01: if (canDown && downAllowed)
-                                        begin pinkyY <= pinkyY + 1; moved = 1; end
+                                       begin pinkyY <= pinkyY + 1; moved = 1; end
                         2'b10: if (canLeft)  begin pinkyX <= pinkyX - 1; moved = 1; end
                         2'b11: if (canRight) begin pinkyX <= pinkyX + 1; moved = 1; end
                     endcase
                 end
 
-                // ---------------------------------------------------
-                // 3. Try any legal alternative (except reverse)
-                // ---------------------------------------------------
+                // Try alternatives
                 if (!moved) begin
-                    if (canUp    && reverseDir != 2'b00) begin pinkyY <= pinkyY - 1; currDir <= 2'b00; moved = 1; end
+                    if (canUp    && reverseDir != 2'b00)
+                        begin pinkyY <= pinkyY - 1; currDir <= 2'b00; moved = 1; end
                     else if (canDown && downAllowed && reverseDir != 2'b01)
                         begin pinkyY <= pinkyY + 1; currDir <= 2'b01; moved = 1; end
-                    else if (canLeft  && reverseDir != 2'b10) begin pinkyX <= pinkyX - 1; currDir <= 2'b10; moved = 1; end
-                    else if (canRight && reverseDir != 2'b11) begin pinkyX <= pinkyX + 1; currDir <= 2'b11; moved = 1; end
+                    else if (canLeft  && reverseDir != 2'b10)
+                        begin pinkyX <= pinkyX - 1; currDir <= 2'b10; moved = 1; end
+                    else if (canRight && reverseDir != 2'b11)
+                        begin pinkyX <= pinkyX + 1; currDir <= 2'b11; moved = 1; end
                 end
+
+                // -----------------------------------------------------------
+                // ★ TUNNEL TELEPORT (FULLY INTEGRATED) ★
+                // -----------------------------------------------------------
+                if (ghost_left_tunnel && ghost_dir == LEFT) begin
+                    pinkyX <= 6'd27;
+                    pinkyY <= 6'd19;
+                end
+                else if (ghost_right_tunnel && ghost_dir == RIGHT) begin
+                    pinkyX <= 6'd0;
+                    pinkyY <= 6'd19;
+                end
+
             end
         end
     end

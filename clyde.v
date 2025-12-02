@@ -35,7 +35,7 @@ wire [15:0] distCircSq = cdx*cdx + cdy*cdy;
 wire pacNearCircle = (distCircSq < 16'd64); // within 8 tiles
 
 // =======================================================
-// Clyde starting position
+// Clyde starting
 // =======================================================
 localparam [5:0] CLYDE_START_TILE_X = 6'd15;
 localparam [5:0] CLYDE_START_TILE_Y = 6'd19;
@@ -75,7 +75,7 @@ always @(posedge clk) begin
 end
 
 // =======================================================
-// Distance to pacman
+// Distance to Pac-Man
 // =======================================================
 wire signed [7:0] dx = pacmanX - clydeX;
 wire signed [7:0] dy = pacmanY - clydeY;
@@ -123,11 +123,17 @@ reg [1:0] escapeState = 0;
 reg [1:0] dir;
 reg [1:0] desiredDir;
 reg [1:0] reverseDir;
-reg canUp, canDown, canLeft, canRight;
-reg moved;
+reg       canUp, canDown, canLeft, canRight;
+reg       moved;
 
 // =======================================================
-// MAIN
+// Tunnel wires — MOVED OUTSIDE ALWAYS BLOCK
+// =======================================================
+wire leftTunnel  = (clydeX == 6'd0)  && (clydeY == 6'd19);
+wire rightTunnel = (clydeX == 6'd27) && (clydeY == 6'd19);
+
+// =======================================================
+// MAIN BLOCK
 // =======================================================
 always @(posedge clk or posedge reset) begin
     if (reset) begin
@@ -140,7 +146,9 @@ always @(posedge clk or posedge reset) begin
         dir         <= 0;
     end else begin
 
+        // -------------------------------
         // 5 second wait
+        // -------------------------------
         if (!delayDone) begin
             if (startDelay < FIVE_SEC_TICKS)
                 startDelay <= startDelay + 1;
@@ -156,9 +164,9 @@ always @(posedge clk or posedge reset) begin
             if (clydeStep) begin
                 case (escapeState)
 
-                // ====================================================
-                // STATE 1 — Move LEFT until X=13
-                // ====================================================
+                // -----------------------------------------------
+                // STATE 1 — Move LEFT to exit X tile
+                // -----------------------------------------------
                 1: begin
                     if (clydeX > EXIT_X) begin
                         if (!wallLeft) begin
@@ -170,9 +178,9 @@ always @(posedge clk or posedge reset) begin
                     end
                 end
 
-                // ====================================================
-                // STATE 2 — Move UP until Y=16
-                // ====================================================
+                // -----------------------------------------------
+                // STATE 2 — Move UP to exit Y tile
+                // -----------------------------------------------
                 2: begin
                     if (clydeY > EXIT_Y) begin
                         if (!wallUp) begin
@@ -180,15 +188,16 @@ always @(posedge clk or posedge reset) begin
                             dir <= 0;
                         end
                     end else begin
-                        escapeState <= 3; // done escaping
+                        escapeState <= 3;
                     end
                 end
 
-                // ====================================================
-                // STATE 3 — NORMAL AI
-                // ====================================================
+                // -----------------------------------------------
+                // STATE 3 — Normal Clyde AI
+                // -----------------------------------------------
                 3: begin
 
+                    // Desired direction based on target
                     if (targetX > clydeX)
                         desiredDir = 3;
                     else if (targetX < clydeX)
@@ -198,6 +207,7 @@ always @(posedge clk or posedge reset) begin
                     else
                         desiredDir = 0;
 
+                    // Reverse direction
                     case (dir)
                         0: reverseDir = 1;
                         1: reverseDir = 0;
@@ -205,6 +215,7 @@ always @(posedge clk or posedge reset) begin
                         3: reverseDir = 2;
                     endcase
 
+                    // Wall checks
                     canUp    = !wallUp;
                     canDown  = !wallDown;
                     canLeft  = !wallLeft;
@@ -212,6 +223,7 @@ always @(posedge clk or posedge reset) begin
 
                     moved = 0;
 
+                    // Try desired direction
                     if (!moved && desiredDir != reverseDir) begin
                         case (desiredDir)
                             0: if (canUp)    begin clydeY <= clydeY - 1; dir <= 0; moved = 1; end
@@ -221,6 +233,7 @@ always @(posedge clk or posedge reset) begin
                         endcase
                     end
 
+                    // Continue straight if desired failed
                     if (!moved) begin
                         case (dir)
                             0: if (canUp)    begin clydeY <= clydeY - 1; moved = 1; end
@@ -230,6 +243,7 @@ always @(posedge clk or posedge reset) begin
                         endcase
                     end
 
+                    // Try any non-reverse direction
                     if (!moved) begin
                         if (canUp    && reverseDir != 0) begin clydeY <= clydeY - 1; dir <= 0; moved = 1; end
                         else if (canDown  && reverseDir != 1) begin clydeY <= clydeY + 1; dir <= 1; moved = 1; end
@@ -237,8 +251,20 @@ always @(posedge clk or posedge reset) begin
                         else if (canRight && reverseDir != 3) begin clydeX <= clydeX + 1; dir <= 3; moved = 1; end
                     end
                 end
-
                 endcase
+
+                // -----------------------------------------------
+                // Tunnel teleport (AFTER MOVEMENT)
+                // -----------------------------------------------
+                if (leftTunnel && dir == 2) begin
+                    clydeX <= 6'd27;
+                    clydeY <= 6'd19;
+                end
+                else if (rightTunnel && dir == 3) begin
+                    clydeX <= 6'd0;
+                    clydeY <= 6'd19;
+                end
+
             end
         end
     end
