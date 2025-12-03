@@ -1,6 +1,6 @@
-//Based on what level player is on, set the power ups, movespeeds for the level
+// Level parameters: speed and timing values for each level
 module level_params(
-    input  wire [4:0] level,   // 1–21+
+    input  wire [4:0] level,
     
     output reg [7:0] pacman_speed,
     output reg [7:0] pacman_dots_speed,
@@ -15,16 +15,13 @@ module level_params(
     output reg [7:0] fright_pacman_speed,
     output reg [7:0] fright_pacman_dots_speed,
     output reg [7:0] fright_ghost_speed,
-    output reg [3:0] fright_time,       // seconds
-    output reg [2:0] fright_flashes     // number of flashes
+    output reg [3:0] fright_time,
+    output reg [2:0] fright_flashes
 );
 
 always @(*) begin
     case (level)
 
-    //============================================================
-    // LEVEL 1
-    //============================================================
     1: begin
         pacman_speed            = 80;
         pacman_dots_speed       = 71;
@@ -43,9 +40,6 @@ always @(*) begin
         fright_flashes          = 5;
     end
 
-    //============================================================
-    // LEVEL 2
-    //============================================================
     2: begin
         pacman_speed            = 90;
         pacman_dots_speed       = 79;
@@ -64,9 +58,6 @@ always @(*) begin
         fright_flashes          = 5;
     end
 
-    //============================================================
-    // LEVEL 3–4 (same values)
-    //============================================================
     3,4: begin
         pacman_speed            = 90;
         pacman_dots_speed       = 79;
@@ -85,17 +76,12 @@ always @(*) begin
         fright_flashes          = 5;
     end
 
-    //============================================================
-    // LEVEL 5–20 (SAME VALUES)
-    //============================================================
     5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20: begin
         pacman_speed            = 100;
         pacman_dots_speed       = 87;
         ghost_speed             = 95;
         ghost_tunnel_speed      = 50;
 
-        // dots left vary by level but here is a simplified version:
-        // If you want exact values per level, I can add them.
         elroy1_dots_left        = 50;
         elroy1_speed            = 100;
         elroy2_dots_left        = 25;
@@ -125,9 +111,6 @@ always @(*) begin
         endcase
     end
 
-    //============================================================
-    // LEVEL 21+ (same forever)
-    //============================================================
     default: begin
         pacman_speed            = 90;
         pacman_dots_speed       = 79;
